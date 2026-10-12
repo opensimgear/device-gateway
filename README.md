@@ -6,12 +6,22 @@ STM32G0B1 USB-to-CAN FD gateway with **USB-C, two parallel 4P4C powered CAN sock
 
 - C firmware for `gateway_g0b1cb_rev_a`, with USB HID and CDC, a unique MCU-derived USB serial, and active CAN FD at 500 kbit/s arbitration / 2 Mbit/s data.
 - Discovery and node allocation for up to ten module identities. Permanent controller slots store each registered identity and its input profile; unplugging a module preserves its slot and emits configured neutral values.
-- One HID interface with a joystick top-level collection and stable report ID for each registered module. Each profile supports up to eight 16-bit axes and 64 buttons. Host/game interpretation of multiple collections still needs physical testing.
+- One HID interface with a joystick top-level collection and stable report ID for each registered module. Each profile supports up to eight 16-bit axes, four hats and 128 buttons. Host/game interpretation of multiple collections still needs physical testing.
 - Bounded CAN queues, sequence/lease checks, direct USB input ownership, 250 ms input timeout, 1.5 s presence timeout, and bus-off recovery.
 - CRC-protected registration stored in two independent flash pages with a commit marker written last. Explicit `apply` saves the pending registry and reconnects USB with the new layout.
 - Editable KiCad schematic, PCB, exact-part BOM, local libraries, review and fabrication exports, and a Linux SocketCAN reference peer.
 
-The CAN application protocol is a **private, versioned bring-up protocol**, documented with conformance vectors. It is not the final OpenSimGear Cyphal protocol. Existing module firmware only implements CAN loopback and cannot yet send these application messages. The current Cockpit Pico simulator uses a different serial protocol; its adapter does not connect to this firmware. Module transport integration, Cockpit integration, configuration/output routing and firmware update support remain separate work.
+The generic device and gateway now share **private CAN FD protocol v2**, with
+lossless profiles and acknowledgements after actual USB HID completion. Cockpit
+desktop uses a separate correlated CDC v2 adapter to discover devices, stage
+registration and explicitly apply the saved USB layout. Offline slots survive
+disconnects and gateway restarts. Direct device USB takes ownership and leaves
+the gateway slot neutral. The Pico simulator keeps its own protocol and adapter.
+As of 2026-10-12, native behavior/journal tests, cross-firmware integration and
+conformance checks pass, and the STM32 target cross-builds. Physical USB/CAN
+acceptance remains pending. Device calibration/settings, outputs, firmware
+updates and canonical Cyphal definitions remain future work. `libcanard` is
+pinned scaffolding; the current wire path does not use Cyphal.
 
 ## Connectors and power
 
@@ -53,11 +63,11 @@ ELF, BIN, HEX and MAP outputs are placed under `firmware/build/gateway/`. No com
 - [Fabrication construction](electronics/boards/gateway/rev-a/FABRICATION.md)
 - [Electrical/static validation](electronics/boards/gateway/rev-a/VALIDATION.md)
 - [Firmware validation results](firmware/VALIDATION.md)
-- [CAN application framing](firmware/docs/can-fd-bringup-v1.md)
+- [CAN application framing](firmware/docs/can-fd-v2.md)
 - [Registration, HID layout and storage semantics](firmware/docs/core.md)
 - [Assembly and enclosure constraints](hardware/README.md)
 
-Static checks and cross-compilation establish source-level behaviour. No gateway PCB has been assembled, flashed or electrically measured; fabrication review and physical USB/CAN/power acceptance remain required. The initial network validation target is up to ten modules and 5 m total cable with typical links below 1 m, within the measured power budget.
+Static checks and cross-compilation establish source-level behaviour. No gateway PCB has been assembled, flashed or electrically measured; fabrication review and physical USB/CAN/power acceptance remain required. The initial network validation target is up to ten modules and 5 m total cable with typical links below 1 m, subject to the power budget established by measurement.
 
 ## Related repositories and licensing
 
