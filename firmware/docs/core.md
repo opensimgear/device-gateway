@@ -1,6 +1,6 @@
 # Portable gateway core
 
-`gateway.c`, `gateway_protocol.c`, `gateway_registry.c` and `gateway_cockpit.c` are allocation-free C11
+`gateway.c`, `gateway_registry.c`, `gateway_journal.c` and `gateway_cockpit.c` are allocation-free C11
 and have no MCU, RTOS, TinyUSB or host-library dependency. The STM32 board
 adapts CAN FD frames, time, USB, and persistent storage around these interfaces.
 All mutation belongs to a single event loop; callbacks must not mutate the core
@@ -8,7 +8,7 @@ concurrently. Rejected frames are counted and do not refresh their source's heal
 
 Initialize with a valid saved registry and a freshly reserved persisted lease
 block. Every saved identity occupies one of 10 slots. Discoveries allocate chain
-node IDs independently; temporary absence, moving between the two ports, or
+logical routes independently of Cyphal CAN node IDs; temporary absence, moving between the two ports, or
 allocation order does not move the registered identity's HID slot. Registered
 identities reserve inventory capacity even while unplugged. Offline unregistered
 discoveries can be replaced when the bounded inventory fills.
@@ -73,7 +73,7 @@ verifies its bytes, and writes a separate commit marker last. The board checks
 that marker before calling the codec. The same journal also preserves the boot
 lease-block base. All hardware flash behavior still requires power-loss testing.
 
-Native tests cover strict decoding and frame CRCs, capability and payload bounds,
+Native tests cover capability and payload bounds,
 sequence/time wrap, direct-USB ownership, stop/start rearming, stale node reuse,
 module timeout, bounded allocation, lease exhaustion, stable descriptors, explicit
 profile application, registry generation wrap, corrupt records and every interrupted
@@ -82,14 +82,19 @@ byte position in an inactive write. These are logic tests, not electrical valida
 Report order is buttons, packed four-bit hats, then unsigned little-endian axes.
 A neutral used hat has nibble 8; an unused high nibble is zero. The maximum
 profile is 128 buttons, four hats and eight axes, producing 34 payload bytes.
-The v2 codec routes compact INPUT/INPUT_ACK by node, boot and lease; full UUIDs
-remain in ANNOUNCE/ASSIGN/HEARTBEAT. The registry writes hat count in slot byte 3;
+Cyphal Input/InputAck types carry compact logical route, boot and lease fields;
+full UUIDs remain in Announce/Assignment/Status. The transport source node is
+bound to each UID/lease. Input and Status from another source are rejected.
+A UID moving to a new source needs a fresh announcement and lease, invalidating
+old USB completions. A different UID announcing on an occupied source revokes
+the previous route while CAN node-ID autoconfiguration resolves the collision. The registry writes hat count in slot byte 3;
 legacy version 1 records require that byte zero and retain their 64-button bound.
 
 `osg_gateway_delivery_prepare()` captures an eligible active input’s exact
 sequence/report and run/module generations at USB submission.
 `osg_gateway_delivery_complete()` validates the callback’s report ID, length and
-bytes, plus the still-current route and generations, before encoding an ACK.
+bytes, plus the still-current route and generations, before creating an ACK
+message for the shared Cyphal transport.
 New input cannot overwrite the captured sequence, and a heartbeat’s sequence is
 not confused with the last input sequence. USB/run, ownership, stale input,
 lease/session and active profile changes discard old completions. Neutral
@@ -102,3 +107,10 @@ Apply only schedules USB activation after persistence succeeds. The fixed writer
 returns an empty string on overflow, and tests parse fresh maximum snapshots
 independently as JSON. Full device calibration/settings/update commands remain
 outside this inventory/registry contract.
+
+`osg_gateway_receive()` accepts complete decoded application messages with Cyphal
+source metadata. The board owns a separate `osg_cyphal_t` and feeds raw frames
+through `osg_cyphal_receive()`. It sends Assignment and USB-completion InputAck
+messages through `osg_cyphal_send()`, and services `osg_cyphal_tick()` for standard
+Heartbeat, GetInfo, collision handling and queued retries. Bus recovery resets
+both transport state and application leases. See [the active Cyphal contract](cyphal.md).

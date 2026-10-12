@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - name: Configure portable behavior and flash journal tests
+      - name: Configure gateway, flash journal and Cyphal transport tests
         working-directory: firmware
         run: cmake --preset native
       - name: Build and test
@@ -15,9 +15,10 @@ jobs:
         run: |
           cmake --build --preset native --parallel
           ctest --preset native
-      - name: Check SocketCAN peer protocol vectors
+      - name: Check native Cyphal SocketCAN peer and Cockpit snapshots
         env:
-          OSG_GATEWAY_TEST: firmware/build/native/osg_gateway_test
+          OSG_GATEWAY_TEST: ../.research/gateway-native/osg_gateway_test
+          OSG_CYPHAL_PEER_LIBRARY: ../.research/gateway-native/libosg_gateway_peer.so
         run: python3 -m unittest discover -s tools -p 'test_*.py'
   board-build:
     runs-on: ubuntu-24.04

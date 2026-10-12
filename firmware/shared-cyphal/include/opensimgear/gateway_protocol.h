@@ -4,12 +4,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Private bring-up protocol, NOT Cyphal/CAN or the canonical OSG protocol. */
-enum { OSG_GW_PROTOCOL_VERSION=2, OSG_GW_MAX_MODULES=10,
+/* Application contract 3 uses the canonical OpenSimGear Cyphal DSDL types. */
+enum { OSG_GW_PROTOCOL_VERSION=3, OSG_GW_MAX_MODULES=10,
        OSG_GW_IDENTITY_SIZE=16, OSG_GW_MAX_AXES=8, OSG_GW_MAX_BUTTONS=128,
        OSG_GW_MAX_HATS=4, OSG_GW_MAX_REPORT_SIZE=34, OSG_GW_FRAME_CAPACITY=64 };
-#define OSG_GW_CAN_BASE UINT32_C(0x1a500000)
-#define OSG_GW_CAN_MASK UINT32_C(0x1ffff800)
+enum { OSG_CYPHAL_SUBJECT_ANNOUNCE=2000, OSG_CYPHAL_SUBJECT_ASSIGN=2001,
+       OSG_CYPHAL_SUBJECT_INPUT=2002, OSG_CYPHAL_SUBJECT_STATUS=2003,
+       OSG_CYPHAL_SUBJECT_INPUT_ACK=2004 };
 typedef struct { uint8_t bytes[OSG_GW_IDENTITY_SIZE]; } osg_gateway_identity_t;
 typedef struct {
     uint8_t button_count, axis_count, hat_count;
@@ -24,10 +25,13 @@ typedef struct {
     uint8_t length;
     bool extended, fd, brs;
     uint8_t data[OSG_GW_FRAME_CAPACITY];
+    uint32_t deadline_ms; /* Local TX driver metadata, never part of CAN bytes. */
+    bool deadline_valid; /* RX frames may leave false; queued TX must expire at this time. */
 } osg_gateway_frame_t;
 typedef struct {
     osg_gateway_message_type_t type;
     uint8_t node;
+    uint8_t source_node; /* Cyphal metadata, never serialized; independent of logical node/slot. */
     bool direct_usb;
     osg_gateway_identity_t identity;
     uint32_t boot_session, lease, gateway_epoch, sequence;
@@ -45,6 +49,8 @@ bool osg_gateway_profile_report_valid(const osg_gateway_profile_t *, const uint8
 /* Buttons, packed 4-bit hats (8 = neutral), then little-endian uint16 axes. */
 void osg_gateway_profile_neutral(const osg_gateway_profile_t *, uint8_t report[OSG_GW_MAX_REPORT_SIZE]);
 uint32_t osg_gateway_crc32(const void *, size_t);
-bool osg_gateway_frame_encode(const osg_gateway_message_t *, osg_gateway_frame_t *);
-bool osg_gateway_frame_decode(const osg_gateway_frame_t *, osg_gateway_message_t *);
+uint16_t osg_gateway_subject(osg_gateway_message_type_t);
+/* DSDL payload helpers. CAN identifiers/tails/fragmentation are exclusively handled by libcanard. */
+size_t osg_gateway_payload_encode(const osg_gateway_message_t *, void *, size_t);
+bool osg_gateway_payload_decode(uint16_t subject_id, const void *, size_t, osg_gateway_message_t *);
 #endif

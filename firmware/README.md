@@ -7,9 +7,9 @@ pin 1 BUS12V, pin 2 CANH, pin 3 CANL, pin 4 GND. Moving a module between the
 jacks does not change its identity or controller slot.
 
 The firmware builds a real STM32 ELF, binary and Intel HEX. It has active CAN FD,
-USB HID plus CDC, discovery, bounded chain-local node allocation, an identity-based
+USB HID plus CDC, discovery, bounded chain-local logical route allocation, an identity-based
 registry, persistent storage and explicit USB layout application. It uses the
-[CAN FD v2 prototype contract](docs/can-fd-v2.md), shared with the generic
+[Cyphal/CAN application contract](docs/cyphal.md), shared with the generic
 module firmware and Cockpit’s native STM32 adapter. The Pico simulator remains
 a separate transport and does not implement this console.
 Electrical operation and host/game treatment of multiple HID collections still
@@ -26,7 +26,7 @@ cmake --preset native
 cmake --build --preset native --parallel
 ctest --preset native
 cd ..
-OSG_GATEWAY_TEST=firmware/build/native/osg_gateway_test python3 -m unittest discover -s tools -p 'test_*.py'
+OSG_GATEWAY_TEST=../.research/gateway-native/osg_gateway_test python3 -m unittest discover -s tools -p 'test_*.py'
 ```
 
 For the board build, put Arm GNU's `arm-none-eabi-*` tools on PATH. Supply USB
@@ -38,24 +38,26 @@ cmake --preset gateway -DOSG_USB_VID=<your-vid> -DOSG_USB_PID=<your-pid>
 cmake --build --preset gateway --parallel
 ```
 
-Outputs are `build/gateway/osg_gateway.{elf,bin,hex,map}`. Flash the HEX with SWD
+Outputs are under the workspace `.research/gateway-arm/` directory as
+`osg_gateway.{elf,bin,hex,map}`. Flash the HEX with SWD
 using a programmer configured for **STM32G0B1CB, 128 KiB flash**, preserving the
 last two pages when retaining the registry. Never flash or distribute the
 unallocated `0xFFFF:0xFFFF` identifiers used solely by CI compile checks.
 
 The build pins firmware-common to commit
-`35e06787fb9696977fe92d20c5ff5afc1e3e1ebf`, whose pins select TinyUSB, ST HAL,
-CMSIS, libcanard and the canonical protocol source. The CAN FD v2 codec
-is implemented in this gateway and snapshotted into the protocol repository;
-libcanard is pinned for later Cyphal integration and is not linked into its wire path. Dependency clones
-are stored under the workspace `.research/gateway-deps` directory. See
-[dependency configuration](cmake/README.md) for local source overrides.
+`35e06787fb9696977fe92d20c5ff5afc1e3e1ebf` for TinyUSB, ST HAL and CMSIS.
+The maintained `shared-cyphal/` snapshot comes from canonical `protocol/cyphal/`
+and supplies generated Nunavut bindings, OpenSimGear DSDL and pinned libcanard 5.0.
+Both native tests and the board target link that actual transport. Dependency
+clones remain under workspace `.research/gateway-deps`. See
+[dependency configuration](cmake/README.md) for local source overrides and
+[shared transport](shared-cyphal/README.md) for generation, pins and provenance.
 
 ## USB and registered controllers
 
 The MCU's 96-bit factory UID is the stable 24-hex-character gateway identity and
 USB serial number. The CDC `identity` response includes the discriminator
-`gatewayType=stm32-can-gateway protocol=2 canProtocol=2 firmware=0.2.0`. Module identities are separate
+`gatewayType=stm32-can-gateway protocol=2 canProtocol=3 firmware=0.3.0`. Module identities are separate
 16-byte values printed as 32 hexadecimal digits.
 
 There are ten permanent registry slots, each retaining its module identity and
@@ -144,14 +146,20 @@ reports, failed USB transfers and control `GET_REPORT` reads do not acknowledge
 encoder pulses. A correctly routed module therefore advances pulses only when
 the host has actually received them.
 
-Normal CAN FD uses 500 kbit/s arbitration, 2 Mbit/s data and bit-rate switching.
-The hardware filter accepts the private protocol prefix; software validates full
-IDs, payload lengths, CRCs, identity, lease, boot session and sequence. The receive
+Cyphal/CAN FD uses 500 kbit/s arbitration, 2 Mbit/s data and bit-rate switching.
+The hardware filter receives extended data frames for Cyphal application traffic,
+standard services and CAN node-ID occupancy tracking. libcanard validates Cyphal
+identifiers, transfer tails, transfer IDs and multi-frame CRCs/reassembly; generated
+DSDL and application checks validate identity, source node, lease, boot session,
+sequence, profile and report bounds. The receive
 budget is four frames per loop. The eight-frame transmit queue sends one request
 at a time, disables automatic hardware retransmission, and allows at most three
-attempts with 20 ms retries. A request that still cannot cancel at 40 ms forces
-controller recovery. Bus-off recovery runs at one-second intervals and
-revokes module leases. Diagnostics expose FIFO losses and queue drops. Inputs
+attempts with 20 ms retries. A request that remains pending 20 ms after cancellation begins forces
+controller recovery. Transport deadlines are preserved into the hardware queue;
+expired frames are discarded before sending or retrying. Standard Heartbeat runs
+every second and GetInfo exposes the gateway UID and node name. Classic CAN input
+transfers and FD without BRS are accepted by the stack too. Bus-off recovery runs at one-second intervals and
+purges transport sessions/queues and revokes module leases. Diagnostics expose FIFO losses and queue drops. Inputs
 neutralize after 250 ms without fresh input; nodes go offline after 1500 ms.
 
 The application owns only the first 124 KiB of flash. Pages at `0x0801F000` and

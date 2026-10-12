@@ -13,17 +13,16 @@ static osg_gateway_profile_t profile(void) {
 }
 static osg_gateway_message_t announce(unsigned id) {
     return (osg_gateway_message_t){.type=OSG_GW_ANNOUNCE,.identity=identity(id),
-        .boot_session=100,.profile=profile()};
+        .boot_session=100,.source_node=(uint8_t)(20+id),.profile=profile()};
 }
 static osg_gateway_receive_result_t receive(osg_gateway_t *g,const osg_gateway_message_t *msg,
-                                            uint32_t now,osg_gateway_frame_t *reply) {
-    osg_gateway_frame_t frame; assert(osg_gateway_frame_encode(msg,&frame));
-    return osg_gateway_receive(g,&frame,now,reply);
+                                            uint32_t now,osg_gateway_message_t *reply) {
+    return osg_gateway_receive(g,msg,now,reply);
 }
 static osg_gateway_message_t discover(osg_gateway_t *g,unsigned id,uint32_t now) {
-    osg_gateway_message_t msg=announce(id),assignment; osg_gateway_frame_t reply;
+    osg_gateway_message_t msg=announce(id),assignment; osg_gateway_message_t reply;
     assert(receive(g,&msg,now,&reply)==OSG_GW_RX_ASSIGNMENT);
-    assert(osg_gateway_frame_decode(&reply,&assignment)); return assignment;
+    assignment=reply; assignment.source_node=msg.source_node; return assignment;
 }
 static osg_gateway_message_t input(osg_gateway_message_t assignment,uint32_t seq) {
     assignment.type=OSG_GW_INPUT; assignment.gateway_epoch=0; assignment.sequence=seq;
@@ -45,38 +44,11 @@ static void protocol_test(void) {
     assert(!osg_gateway_identity_parse("00000000000000000000000000000000",&parsed));
     assert(!osg_gateway_identity_parse("ffffffffffffffffffffffffffffffff",&parsed));
     assert(!osg_gateway_identity_parse("1234",&parsed));
-    osg_gateway_message_t msg=announce(1),decoded; osg_gateway_frame_t frame;
-    assert(osg_gateway_frame_encode(&msg,&frame));
-    assert(osg_gateway_frame_decode(&frame,&decoded));
-    assert(osg_gateway_identity_equal(&decoded.identity,&msg.identity));
-    assert(osg_gateway_profile_equal(&decoded.profile,&msg.profile));
-    for(unsigned i=0;i<frame.length;i++) {
-        osg_gateway_frame_t corrupt=frame; corrupt.data[i]^=0x80;
-        assert(!osg_gateway_frame_decode(&corrupt,&decoded));
-    }
-    for(unsigned i=0;i<64;i++) if(i!=48) {
-        osg_gateway_frame_t shorter=frame; shorter.length=(uint8_t)i;
-        assert(!osg_gateway_frame_decode(&shorter,&decoded));
-    }
-    osg_gateway_frame_t bad=frame; bad.id^=1; assert(!osg_gateway_frame_decode(&bad,&decoded));
-    bad=frame; bad.extended=false; assert(!osg_gateway_frame_decode(&bad,&decoded));
-    bad=frame; bad.fd=false; assert(!osg_gateway_frame_decode(&bad,&decoded));
-    bad=frame; bad.brs=false; assert(!osg_gateway_frame_decode(&bad,&decoded));
-    msg.profile.axis_usage[1]=0x30; assert(!osg_gateway_frame_encode(&msg,&frame));
-    msg.profile=profile(); msg.profile.axis_neutral[7]=1; assert(!osg_gateway_frame_encode(&msg,&frame));
-    msg.profile=profile(); msg.profile.button_count=129; assert(!osg_gateway_frame_encode(&msg,&frame));
-    msg.profile=profile(); msg.profile.hat_count=5; assert(!osg_gateway_frame_encode(&msg,&frame));
-    msg=(osg_gateway_message_t){.type=OSG_GW_INPUT_ACK,.node=1,.boot_session=1,.lease=1};
-    assert(osg_gateway_frame_encode(&msg,&frame) && osg_gateway_frame_decode(&frame,&decoded));
-    const unsigned reserved[]={54,59,6};
-    for(unsigned i=0;i<sizeof reserved/sizeof reserved[0];i++) {
-        bad=frame; bad.data[reserved[i]]=1; uint32_t crc=osg_gateway_crc32(bad.data,60);
-        for(unsigned j=0;j<4;j++) bad.data[60+j]=(uint8_t)(crc>>(8*j));
-        assert(!osg_gateway_frame_decode(&bad,&decoded)); /* valid CRC, invalid padding */
-    }
-    bad=frame; bad.data[2]=1; uint32_t crc=osg_gateway_crc32(bad.data,60);
-    for(unsigned j=0;j<4;j++) bad.data[60+j]=(uint8_t)(crc>>(8*j));
-    assert(!osg_gateway_frame_decode(&bad,&decoded)); /* old wire version */
+    osg_gateway_profile_t invalid=profile();
+    invalid.axis_usage[1]=0x30; assert(!osg_gateway_profile_valid(&invalid));
+    invalid=profile(); invalid.axis_neutral[7]=1; assert(!osg_gateway_profile_valid(&invalid));
+    invalid=profile(); invalid.button_count=129; assert(!osg_gateway_profile_valid(&invalid));
+    invalid=profile(); invalid.hat_count=5; assert(!osg_gateway_profile_valid(&invalid));
 }
 static void lifecycle_test(void) {
     osg_gateway_t g; assert(osg_gateway_init(&g,0x10000,NULL));
@@ -118,7 +90,7 @@ static void lifecycle_test(void) {
 }
 static void bounds_and_wrap_test(void) {
     osg_gateway_t g; assert(osg_gateway_init(&g,0x20000,NULL));
-    osg_gateway_frame_t reply;
+    osg_gateway_message_t reply;
     for(unsigned i=1;i<=10;i++) {
         osg_gateway_message_t a=discover(&g,i,0xfffffff0U); assert(a.node==i);
         osg_gateway_identity_t id=identity(i); assert(osg_gateway_register(&g,&id));
@@ -203,7 +175,7 @@ static void descriptor_test(void) {
     for(unsigned i=1;i<=10;i++) assert(bits[i]==40);
     osg_gateway_tick(&g,2000); assert(osg_gateway_descriptor(&g,after,sizeof after)==n);
     assert(!memcmp(before,after,n)); /* unplug preserves exact descriptors */
-    osg_gateway_identity_t id=identity(1); osg_gateway_frame_t reply;
+    osg_gateway_identity_t id=identity(1); osg_gateway_message_t reply;
     osg_gateway_message_t changed=announce(1); changed.profile.button_count=4;
     assert(receive(&g,&changed,2001,&reply)==OSG_GW_RX_ASSIGNMENT);
     assert(osg_gateway_descriptor(&g,after,sizeof after)==n && !memcmp(before,after,n));
@@ -235,8 +207,8 @@ static void maximum_profile_test(void) {
     }
     for(unsigned i=1;i<=10;i++) assert(bit_count[i]==34*8);
     osg_gateway_message_t msg=announce(1); msg.profile=r.slots[0].profile;
-    osg_gateway_frame_t assignment; assert(receive(&g,&msg,0,&assignment)==OSG_GW_RX_ASSIGNMENT);
-    assert(osg_gateway_frame_decode(&assignment,&msg));
+    osg_gateway_message_t assignment; assert(receive(&g,&msg,0,&assignment)==OSG_GW_RX_ASSIGNMENT);
+    msg=assignment; msg.source_node=21;
     msg.type=OSG_GW_INPUT; msg.sequence=1;
     for(unsigned i=0;i<sizeof msg.report;i++) msg.report[i]=(uint8_t)(i+1);
     msg.report[16]=0x70; msg.report[17]=0x88;
@@ -261,7 +233,7 @@ static void maximum_profile_test(void) {
     /* Registered profile stays authoritative until explicit apply. */
     msg=announce(1); msg.profile=r.slots[0].profile; msg.profile.revision=2;
     assert(receive(&g,&msg,253,&assignment)==OSG_GW_RX_ASSIGNMENT);
-    assert(osg_gateway_frame_decode(&assignment,&msg)); msg.type=OSG_GW_INPUT; msg.sequence=1;
+    msg=assignment; msg.source_node=21; msg.type=OSG_GW_INPUT; msg.sequence=1;
     memset(msg.report,0xff,sizeof msg.report); msg.report[16]=0x70; msg.report[17]=0x88;
     assert(receive(&g,&msg,254,NULL)==OSG_GW_RX_ACCEPTED);
     assert(osg_gateway_report(&g,0,report,sizeof report)==34 && report[0]==0);
@@ -276,7 +248,7 @@ static void delivery_test(void) {
     osg_gateway_identity_t id=identity(1); assert(osg_gateway_register(&g,&id));
     osg_gateway_apply_layout(&g); osg_gateway_set_running(&g,true);
     uint8_t wire[OSG_GW_MAX_REPORT_SIZE+1]={1}; osg_gateway_delivery_t d;
-    osg_gateway_frame_t ack; osg_gateway_message_t decoded;
+    osg_gateway_message_t ack; osg_gateway_message_t decoded;
     assert(osg_gateway_delivery_prepare(&g,0,wire+1,sizeof wire-1,&d)==5 && !d.valid);
     assert(!osg_gateway_delivery_complete(&g,&d,wire,6,&ack)); /* neutral fallback */
     assert(receive(&g,&in,1,NULL)==OSG_GW_RX_ACCEPTED);
@@ -293,7 +265,7 @@ static void delivery_test(void) {
     osg_gateway_message_t hb=assignment; hb.type=OSG_GW_HEARTBEAT; hb.sequence=3;
     assert(receive(&g,&hb,3,NULL)==OSG_GW_RX_ACCEPTED);
     assert(osg_gateway_delivery_complete(&g,&d,wire,6,&ack));
-    assert(osg_gateway_frame_decode(&ack,&decoded));
+    decoded=ack;
     assert(decoded.type==OSG_GW_INPUT_ACK && decoded.sequence==1 && decoded.report[0]==5);
     assert(!osg_gateway_identity_valid(&decoded.identity)); /* compact route */
     assert(osg_gateway_receive(&g,&ack,4,NULL)==OSG_GW_RX_REJECTED);
@@ -310,9 +282,48 @@ static void delivery_test(void) {
     assert(!osg_gateway_delivery_complete(&g,&d,wire,6,&ack)); /* freshness generation */
     assert(osg_gateway_delivery_prepare(&g,0,wire+1,sizeof wire-1,&d)==5 && d.valid);
     osg_gateway_message_t reboot=announce(1); reboot.boot_session++;
-    osg_gateway_frame_t reply; assert(receive(&g,&reboot,260,&reply)==OSG_GW_RX_ASSIGNMENT);
+    osg_gateway_message_t reply; assert(receive(&g,&reboot,260,&reply)==OSG_GW_RX_ASSIGNMENT);
     assert(!osg_gateway_delivery_complete(&g,&d,wire,6,&ack)); /* session and lease changed */
     osg_gateway_bus_reset(&g); assert(!osg_gateway_delivery_complete(&g,&d,wire,6,&ack));
+}
+static void transport_source_test(void) {
+    osg_gateway_t g; assert(osg_gateway_init(&g,0x10000,NULL));
+    osg_gateway_message_t announce_message=announce(1),assignment;
+    announce_message.source_node=97; /* CAN address is independent of route1. */
+    assert(receive(&g,&announce_message,0,&assignment)==OSG_GW_RX_ASSIGNMENT);
+    assert(assignment.node==1 && g.modules[0].source_node==97);
+    assignment.source_node=97;
+    osg_gateway_identity_t id=identity(1); assert(osg_gateway_register(&g,&id));
+    osg_gateway_apply_layout(&g); osg_gateway_set_running(&g,true);
+    osg_gateway_message_t in=input(assignment,1);
+    assert(receive(&g,&in,1,NULL)==OSG_GW_RX_ACCEPTED);
+    uint8_t wire[6]={1}; osg_gateway_delivery_t delivery;
+    assert(osg_gateway_delivery_prepare(&g,0,wire+1,5,&delivery)==5 && delivery.valid);
+    osg_gateway_message_t spoof=in; spoof.source_node=98; spoof.sequence=2;
+    assert(receive(&g,&spoof,2,NULL)==OSG_GW_RX_REJECTED);
+    assert(g.modules[0].last_seen==1); check_report(&g,0,true);
+    /* A complete new announcement binds a moved source to a fresh lease. */
+    announce_message.source_node=98;
+    osg_gateway_message_t moved;
+    assert(receive(&g,&announce_message,3,&moved)==OSG_GW_RX_ASSIGNMENT);
+    assert(moved.lease!=assignment.lease && g.modules[0].source_node==98);
+    assert(osg_gateway_find_slot(&g.active,&id)==0); check_report(&g,0,false);
+    osg_gateway_message_t ack;
+    assert(!osg_gateway_delivery_complete(&g,&delivery,wire,sizeof wire,&ack));
+    assert(receive(&g,&in,4,NULL)==OSG_GW_RX_REJECTED);
+    moved.source_node=98; in=input(moved,1);
+    assert(receive(&g,&in,5,NULL)==OSG_GW_RX_ACCEPTED);
+    /* A conflicting UID on the same source neutralizes the old route while
+     * the standard CAN node-ID autoconfiguration resolves the collision. */
+    osg_gateway_message_t conflict=announce(2); conflict.source_node=98;
+    assert(receive(&g,&conflict,6,&moved)==OSG_GW_RX_REJECTED);
+    assert(!g.modules[0].online); check_report(&g,0,false);
+    assert(receive(&g,&in,7,NULL)==OSG_GW_RX_REJECTED);
+    announce_message.source_node=0; /* Cyphal node-ID zero is valid. */
+    assert(receive(&g,&announce_message,8,&moved)==OSG_GW_RX_ASSIGNMENT);
+    assert(g.modules[0].source_node==0);
+    announce_message.source_node=128;
+    assert(receive(&g,&announce_message,9,&moved)==OSG_GW_RX_REJECTED);
 }
 static bool persist(void *context) { unsigned *calls=context; (*calls)++; return *calls>1; }
 static void cockpit_test(void) {
@@ -353,13 +364,13 @@ static void cockpit_case(const char *name,const osg_gateway_t *g,uint32_t id,con
 }
 static void cockpit_vectors(void) {
     osg_gateway_t g; assert(osg_gateway_init(&g,0x10000,NULL));
-    osg_gateway_message_t msg=announce(1); msg.profile=maximum_profile(); osg_gateway_frame_t reply;
+    osg_gateway_message_t msg=announce(1); msg.profile=maximum_profile(); osg_gateway_message_t reply;
     assert(receive(&g,&msg,0,&reply)==OSG_GW_RX_ASSIGNMENT);
     puts("{"); cockpit_case("discovered_unregistered",&g,1,NULL,false);
     osg_gateway_identity_t id=identity(1); assert(osg_gateway_register(&g,&id));
     cockpit_case("pending_profile",&g,2,NULL,false);
     osg_gateway_apply_layout(&g); osg_gateway_set_running(&g,true);
-    assert(osg_gateway_frame_decode(&reply,&msg)); msg.type=OSG_GW_INPUT; msg.sequence=1;
+    msg=reply; msg.source_node=21; msg.type=OSG_GW_INPUT; msg.sequence=1;
     for(unsigned i=0;i<sizeof msg.report;i++) msg.report[i]=(uint8_t)(i+1);
     msg.report[16]=0x70; msg.report[17]=0x88;
     assert(receive(&g,&msg,1,NULL)==OSG_GW_RX_ACCEPTED);
@@ -375,33 +386,9 @@ static void cockpit_vectors(void) {
     assert(osg_gateway_register(&g,&id)); cockpit_case("profile_updated_pending",&g,8,NULL,true);
     puts("}");
 }
-static void vectors(void) {
-    osg_gateway_message_t messages[7]={0};
-    messages[0]=announce(1);
-    assert(osg_gateway_identity_parse("00112233445566778899aabbccddeeff",&messages[0].identity));
-    messages[0].boot_session=0x10203040;
-    messages[1]=(osg_gateway_message_t){.type=OSG_GW_ASSIGN,.node=1,.identity=messages[0].identity,
-        .boot_session=messages[0].boot_session,.lease=0x11223344,.gateway_epoch=0x55667788};
-    messages[2]=input(messages[1],9); messages[3]=messages[1];
-    messages[3].type=OSG_GW_HEARTBEAT; messages[3].gateway_epoch=0; messages[3].sequence=10;
-    messages[4]=messages[2]; messages[4].type=OSG_GW_INPUT_ACK;
-    messages[5]=messages[0]; messages[5].profile=maximum_profile();
-    messages[6]=messages[2];
-    for(unsigned i=0;i<sizeof messages[6].report;i++) messages[6].report[i]=(uint8_t)(i+1);
-    messages[6].report[16]=0x70; messages[6].report[17]=0x88;
-    const char *names[]={"announce","assign","input","heartbeat","input_ack","maximum_announce","maximum_input"}; puts("{");
-    for(unsigned i=0;i<7;i++) {
-        osg_gateway_frame_t frame; assert(osg_gateway_frame_encode(&messages[i],&frame));
-        printf("  \"%s\": {\"id\": \"%08x\", \"length\": %u, \"data\": \"",names[i],(unsigned)frame.id,frame.length);
-        for(unsigned j=0;j<frame.length;j++) printf("%02x",frame.data[j]);
-        printf("\"}%s\n",i==6?"":",");
-    }
-    puts("}");
-}
 int main(int argc,char **argv) {
-    if(argc==2 && !strcmp(argv[1],"--vectors")) { vectors(); return 0; }
     if(argc==2 && !strcmp(argv[1],"--snapshot")) { snapshot(); return 0; }
     if(argc==2 && !strcmp(argv[1],"--cockpit-vectors")) { cockpit_vectors(); return 0; }
-    protocol_test(); lifecycle_test(); bounds_and_wrap_test(); registry_test(); descriptor_test(); maximum_profile_test(); delivery_test(); cockpit_test();
+    protocol_test(); lifecycle_test(); bounds_and_wrap_test(); registry_test(); descriptor_test(); maximum_profile_test(); delivery_test(); transport_source_test(); cockpit_test();
     puts("gateway core: all tests passed"); return 0;
 }

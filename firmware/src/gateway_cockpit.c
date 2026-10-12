@@ -65,7 +65,7 @@ size_t osg_gateway_cockpit_response(const osg_gateway_t *g,const char uid[25],ui
     writer_t w={.out=out,.capacity=capacity,.valid=true};
     append(&w,"{\"id\":%lu,\"ok\":%s,\"error\":",(unsigned long)id,boolean(!error));
     if(error) append(&w,"\"%s\"",error); else append(&w,"null");
-    append(&w,",\"state\":{\"gatewayType\":\"stm32-can-gateway\",\"protocol\":2,\"canProtocol\":2,\"firmware\":\"0.2.0\",\"identity\":\"%s\",\"epoch\":%lu,\"running\":%s,\"needsApply\":%s,\"maxModules\":10,\"modules\":[",
+    append(&w,",\"state\":{\"gatewayType\":\"stm32-can-gateway\",\"protocol\":2,\"canProtocol\":3,\"firmware\":\"0.3.0\",\"identity\":\"%s\",\"epoch\":%lu,\"running\":%s,\"needsApply\":%s,\"maxModules\":10,\"modules\":[",
         uid,(unsigned long)g->epoch,boolean(g->running),boolean(osg_gateway_needs_apply(g)));
     bool first=true;
     for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) {

@@ -81,17 +81,24 @@ static bool newer(uint32_t value,uint32_t previous) {
     uint32_t delta=value-previous;
     return delta!=0 && delta<UINT32_C(0x80000000);
 }
-osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *g,const osg_gateway_frame_t *frame,
-                                                uint32_t now,osg_gateway_frame_t *reply) {
+osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *g,const osg_gateway_message_t *message,
+                                                uint32_t now,osg_gateway_message_t *reply) {
     if(!g) return OSG_GW_RX_REJECTED;
-    osg_gateway_message_t msg;
-    if(!osg_gateway_frame_decode(frame,&msg) || msg.type==OSG_GW_ASSIGN || msg.type==OSG_GW_INPUT_ACK) goto rejected;
+    if(!message || message->source_node>127 || !message->boot_session ||
+       (message->type!=OSG_GW_ANNOUNCE && message->type!=OSG_GW_INPUT && message->type!=OSG_GW_HEARTBEAT)) goto rejected;
+    osg_gateway_message_t msg=*message;
+    if(msg.type==OSG_GW_ANNOUNCE) {
+        if(msg.node || !osg_gateway_identity_valid(&msg.identity) || !osg_gateway_profile_valid(&msg.profile)) goto rejected;
+    } else if(!msg.node || msg.node>OSG_GW_MAX_MODULES || !msg.lease ||
+              (msg.type==OSG_GW_HEARTBEAT && !osg_gateway_identity_valid(&msg.identity)) ||
+              (msg.type==OSG_GW_INPUT && msg.direct_usb)) goto rejected;
     osg_gateway_tick(g,now);
     int index=-1;
     if(msg.type==OSG_GW_INPUT) {
         for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) {
             const osg_gateway_module_t *m=&g->modules[i];
-            if(m->occupied && m->online && m->node==msg.node && m->boot_session==msg.boot_session && m->lease==msg.lease) {
+            if(m->occupied && m->online && m->node==msg.node && m->source_node==msg.source_node &&
+               m->boot_session==msg.boot_session && m->lease==msg.lease) {
                 if(index>=0) goto rejected; /* A compact route must resolve unambiguously. */
                 index=(int)i;
             }
@@ -99,11 +106,20 @@ osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *g,const osg_gate
     } else index=osg_gateway_find_module(g,&msg.identity);
     if(msg.type==OSG_GW_ANNOUNCE) {
         if(!reply) goto rejected;
+        /* Do not let two identities share a transport address while a CAN
+         * node-ID collision is being resolved. Invalidate the previous route. */
+        for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) {
+            osg_gateway_module_t *other=&g->modules[i];
+            if(other->occupied && other->online && other->source_node==msg.source_node &&
+               !osg_gateway_identity_equal(&other->identity,&msg.identity)) {
+                revoke(other); goto rejected;
+            }
+        }
         if(index<0) index=available_inventory(g,now);
         if(index<0) { g->rejected_frames++; return OSG_GW_RX_FULL; }
         osg_gateway_module_t *m=&g->modules[index];
         bool same=m->occupied && osg_gateway_identity_equal(&m->identity,&msg.identity);
-        bool renew=!same || !m->online || m->boot_session!=msg.boot_session ||
+        bool renew=!same || !m->online || m->source_node!=msg.source_node || m->boot_session!=msg.boot_session ||
                    !osg_gateway_profile_equal(&m->profile,&msg.profile);
         if(renew) {
             uint32_t lease=allocate_lease(g);
@@ -113,18 +129,19 @@ osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *g,const osg_gate
             uint8_t node=available_node(g);
             if(!node) { g->rejected_frames++; return OSG_GW_RX_FULL; }
             m->occupied=true; m->identity=msg.identity; m->profile=msg.profile;
-            m->boot_session=msg.boot_session; m->node=node; m->lease=lease;
+            m->boot_session=msg.boot_session; m->node=node; m->source_node=msg.source_node; m->lease=lease;
         }
         m->online=true; m->last_seen=now; m->direct_usb=msg.direct_usb;
         if(m->direct_usb) neutral(m);
         osg_gateway_message_t assignment={.type=OSG_GW_ASSIGN,.node=m->node,
             .identity=m->identity,.boot_session=m->boot_session,.lease=m->lease,.gateway_epoch=g->epoch};
-        if(!osg_gateway_frame_encode(&assignment,reply)) goto rejected;
+        *reply=assignment;
         g->accepted_frames++; return OSG_GW_RX_ASSIGNMENT;
     }
     if(index<0) goto rejected;
     osg_gateway_module_t *m=&g->modules[index];
-    if(!m->online || m->node!=msg.node || m->boot_session!=msg.boot_session || m->lease!=msg.lease ||
+    if(!m->online || m->node!=msg.node || m->source_node!=msg.source_node ||
+       m->boot_session!=msg.boot_session || m->lease!=msg.lease ||
        (m->has_sequence && !newer(msg.sequence,m->sequence)) ||
        (msg.type==OSG_GW_INPUT && !osg_gateway_profile_report_valid(&m->profile,msg.report))) goto rejected;
     m->sequence=msg.sequence; m->has_sequence=true; m->last_seen=now;
@@ -203,7 +220,7 @@ size_t osg_gateway_delivery_prepare(const osg_gateway_t *g,unsigned slot,uint8_t
     memcpy(delivery->report,out,length); return length;
 }
 bool osg_gateway_delivery_complete(const osg_gateway_t *g,const osg_gateway_delivery_t *d,
-                                   const uint8_t *delivered,size_t length,osg_gateway_frame_t *ack) {
+                                   const uint8_t *delivered,size_t length,osg_gateway_message_t *ack) {
     if(!g || !d || !d->valid || !delivered || !ack || !g->running || d->run_generation!=g->run_generation ||
        d->slot>=OSG_GW_MAX_MODULES || length!=(size_t)d->length+1 || delivered[0]!=d->slot+1 ||
        memcmp(delivered+1,d->report,d->length)) return false;
@@ -218,7 +235,7 @@ bool osg_gateway_delivery_complete(const osg_gateway_t *g,const osg_gateway_deli
     osg_gateway_message_t message={.type=OSG_GW_INPUT_ACK,.node=d->node,
         .boot_session=d->boot_session,.lease=d->lease,.sequence=d->sequence};
     memcpy(message.report,d->report,sizeof message.report);
-    return osg_gateway_frame_encode(&message,ack);
+    *ack=message; return true;
 }
 size_t osg_gateway_descriptor(const osg_gateway_t *g,uint8_t *out,size_t capacity) {
     if(!g || !out || !osg_gateway_registry_valid(&g->active)) return 0;

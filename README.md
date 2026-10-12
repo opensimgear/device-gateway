@@ -5,23 +5,26 @@ STM32G0B1 USB-to-CAN FD gateway with **USB-C, two parallel 4P4C powered CAN sock
 ## Implemented prototype
 
 - C firmware for `gateway_g0b1cb_rev_a`, with USB HID and CDC, a unique MCU-derived USB serial, and active CAN FD at 500 kbit/s arbitration / 2 Mbit/s data.
-- Discovery and node allocation for up to ten module identities. Permanent controller slots store each registered identity and its input profile; unplugging a module preserves its slot and emits configured neutral values.
+- Discovery and logical route allocation for up to ten module identities. Permanent controller slots store each registered identity and its input profile; unplugging a module preserves its slot and emits configured neutral values.
 - One HID interface with a joystick top-level collection and stable report ID for each registered module. Each profile supports up to eight 16-bit axes, four hats and 128 buttons. Host/game interpretation of multiple collections still needs physical testing.
 - Bounded CAN queues, sequence/lease checks, direct USB input ownership, 250 ms input timeout, 1.5 s presence timeout, and bus-off recovery.
 - CRC-protected registration stored in two independent flash pages with a commit marker written last. Explicit `apply` saves the pending registry and reconnects USB with the new layout.
 - Editable KiCad schematic, PCB, exact-part BOM, local libraries, review and fabrication exports, and a Linux SocketCAN reference peer.
 
-The generic device and gateway now share **private CAN FD protocol v2**, with
-lossless profiles and acknowledgements after actual USB HID completion. Cockpit
-desktop uses a separate correlated CDC v2 adapter to discover devices, stage
-registration and explicitly apply the saved USB layout. Offline slots survive
-disconnects and gateway restarts. Direct device USB takes ownership and leaves
-the gateway slot neutral. The Pico simulator keeps its own protocol and adapter.
-As of 2026-10-12, native behavior/journal tests, cross-firmware integration and
-conformance checks pass, and the STM32 target cross-builds. Physical USB/CAN
-acceptance remains pending. Device calibration/settings, outputs, firmware
-updates and canonical Cyphal definitions remain future work. `libcanard` is
-pinned scaffolding; the current wire path does not use Cyphal.
+The generic device and gateway now share **Cyphal/CAN**, using generated OpenSimGear
+DSDL types and the actual libcanard 5.0 transport. Standard Heartbeat and GetInfo,
+CAN node-ID autoconfiguration, transfer-ID deduplication and multi-frame reassembly
+run in both firmwares. CAN addresses are separate from the gateway's ten logical
+routes and permanent USB slots. Input acknowledgements still follow actual USB
+HID completion. The prior private CAN FD v1/v2 frames are incompatible and rejected.
+
+Cockpit desktop uses the correlated CDC v2 adapter with `canProtocol=3` to discover
+devices, stage registration and explicitly apply the saved USB layout. Offline
+slots survive disconnects and gateway restarts. Direct device USB takes ownership
+and leaves the gateway slot neutral. The Pico simulator keeps its own adapter.
+Native behavior/journal tests, actual transport integration and the STM32 target
+cross-build validate source behavior; physical USB/CAN acceptance remains pending.
+Device calibration/settings, outputs and firmware updates remain future work.
 
 ## Connectors and power
 
@@ -57,13 +60,13 @@ cmake --preset gateway -DOSG_USB_VID=<your-VID> -DOSG_USB_PID=<your-PID>
 cmake --build --preset gateway
 ```
 
-ELF, BIN, HEX and MAP outputs are placed under `firmware/build/gateway/`. No command flashes hardware automatically. See the [firmware guide](firmware/README.md) for exact dependency pins, SWD flashing, recovery and CDC commands. See [CAN peer testing](tools/README.md) for an executable matching module peer.
+ELF, BIN, HEX and MAP outputs are placed under `../.research/gateway-arm/`. No command flashes hardware automatically. See the [firmware guide](firmware/README.md) for exact dependency pins, SWD flashing, recovery and CDC commands. See [CAN peer testing](tools/README.md) for an executable matching module peer.
 
 - [PCB project, pin map and BOM](electronics/boards/gateway/rev-a/README.md)
 - [Fabrication construction](electronics/boards/gateway/rev-a/FABRICATION.md)
 - [Electrical/static validation](electronics/boards/gateway/rev-a/VALIDATION.md)
 - [Firmware validation results](firmware/VALIDATION.md)
-- [CAN application framing](firmware/docs/can-fd-v2.md)
+- [CAN application framing](firmware/docs/cyphal.md)
 - [Registration, HID layout and storage semantics](firmware/docs/core.md)
 - [Assembly and enclosure constraints](hardware/README.md)
 
@@ -71,6 +74,6 @@ Static checks and cross-compilation establish source-level behaviour. No gateway
 
 ## Related repositories and licensing
 
-[Protocol](https://github.com/opensimgear/protocol), [firmware-common](https://github.com/opensimgear/firmware-common), [device-template](https://github.com/opensimgear/device-template), [Cockpit](https://github.com/opensimgear/cockpit), and the [website](https://github.com/opensimgear/opensimgear.github.io) own their respective shared definitions and implementations. This gateway uses pinned common firmware dependencies; the private bring-up protocol does not assign identifiers in the canonical protocol repository.
+[Protocol](https://github.com/opensimgear/protocol), [firmware-common](https://github.com/opensimgear/firmware-common), [device-template](https://github.com/opensimgear/device-template), [Cockpit](https://github.com/opensimgear/cockpit), and the [website](https://github.com/opensimgear/opensimgear.github.io) own their respective shared definitions and implementations. This gateway uses pinned common firmware dependencies; a checked-in shared Cyphal snapshot tracks the canonical protocol repository.
 
 License selection for new OpenSimGear firmware and electronics remains pending. Included KiCad library data retains its [upstream license](electronics/boards/gateway/rev-a/LICENSE-KICAD.md), and firmware dependencies retain their upstream notices. No public USB VID/PID allocation is claimed.

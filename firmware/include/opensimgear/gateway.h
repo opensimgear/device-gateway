@@ -7,7 +7,7 @@ typedef struct {
     bool occupied, online, direct_usb, has_input, has_sequence;
     osg_gateway_identity_t identity;
     osg_gateway_profile_t profile;
-    uint8_t node;
+    uint8_t node,source_node; /* application route and independent Cyphal/CAN source */
     uint32_t boot_session, lease, sequence, input_sequence, last_seen, last_input;
     uint64_t delivery_generation;
     uint8_t report[OSG_GW_MAX_REPORT_SIZE];
@@ -37,8 +37,9 @@ bool osg_gateway_init(osg_gateway_t *, uint32_t epoch, const osg_gateway_registr
 void osg_gateway_tick(osg_gateway_t *, uint32_t now);
 void osg_gateway_set_running(osg_gateway_t *, bool);
 void osg_gateway_bus_reset(osg_gateway_t *); /* neutral + revoke every lease */
-osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *, const osg_gateway_frame_t *,
-                                                uint32_t now, osg_gateway_frame_t *reply);
+/* Only complete, decoded Cyphal transfers are passed to the application core. */
+osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *, const osg_gateway_message_t *,
+                                                uint32_t now, osg_gateway_message_t *reply);
 int osg_gateway_find_module(const osg_gateway_t *, const osg_gateway_identity_t *);
 int osg_gateway_find_slot(const osg_gateway_registry_t *, const osg_gateway_identity_t *);
 bool osg_gateway_register(osg_gateway_t *, const osg_gateway_identity_t *);
@@ -53,5 +54,5 @@ size_t osg_gateway_descriptor(const osg_gateway_t *, uint8_t *, size_t);
 size_t osg_gateway_delivery_prepare(const osg_gateway_t *, unsigned slot, uint8_t *, size_t, osg_gateway_delivery_t *);
 /* Invoke only from a successful USB interrupt completion. delivered includes its report ID. */
 bool osg_gateway_delivery_complete(const osg_gateway_t *, const osg_gateway_delivery_t *,
-                                   const uint8_t *delivered, size_t length, osg_gateway_frame_t *ack);
+                                   const uint8_t *delivered, size_t length, osg_gateway_message_t *ack);
 #endif

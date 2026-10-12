@@ -1,9 +1,6 @@
-import argparse
 import errno
-import itertools
 import json
 import os
-from pathlib import Path
 import subprocess
 import unittest
 from unittest import mock
@@ -12,56 +9,111 @@ import can_peer
 
 
 class ReferencePeerTest(unittest.TestCase):
-    def test_matches_firmware_vectors(self):
-        path = Path(__file__).resolve().parents[1] / "firmware/tests/can-fd-v2-vectors.json"
-        expected = json.loads(path.read_text())
-        executable = os.environ.get("OSG_GATEWAY_TEST")
-        if executable:
-            fresh = json.loads(subprocess.check_output([executable, "--vectors"], text=True))
-            self.assertEqual(fresh, expected, "C codec vectors differ from the stored fixtures")
-        for name, frame in can_peer.reference_vectors().items():
-            with self.subTest(message=name):
-                self.assertEqual(int(frame["id"], 16), int(expected[name]["id"], 16))
-                self.assertEqual(frame["data"], expected[name]["data"])
-                self.assertEqual(len(bytes.fromhex(frame["data"])), expected[name]["length"])
+    @classmethod
+    def setUpClass(cls):
+        cls.library = can_peer.load_library()
+        cls.unit = can_peer.identity("00112233445566778899aabbccddeeff")
+        cls.gateway = can_peer.identity("112233445566778899aabbccddeeff00")
 
-    def test_assignment_is_bound_to_identity_and_session(self):
-        encoded = can_peer.reference_vectors()["assign"]
-        raw = bytes.fromhex(encoded["data"])
-        self.assertEqual(can_peer.decode_assignment(int(encoded["id"], 16), raw),
-                         (bytes.fromhex("00112233445566778899aabbccddeeff"),
-                          0x10203040, 1, 0x11223344, 0x55667788))
-        corrupt = bytearray(raw)
-        corrupt[28] ^= 1
-        with self.assertRaisesRegex(ValueError, "CRC"):
-            can_peer.decode_assignment(int(encoded["id"], 16), corrupt)
-        with self.assertRaisesRegex(ValueError, "CAN ID"):
-            can_peer.decode_assignment(int(encoded["id"], 16) + 1, raw)
+    def roundtrip(self, value):
+        with can_peer.Peer(self.gateway, 0x10000, self.library) as sender, \
+                can_peer.Peer(self.unit, 100, self.library) as receiver:
+            self.assertNotEqual(sender.node, receiver.node)
+            self.assertTrue(sender.send(value, 0))
+            frames = list(sender.frames())
+            self.assertEqual(len(frames), 1)
+            received = receiver.receive(frames[0], 0)
+            self.assertIsNotNone(received)
+            self.assertEqual(received.source, sender.node)
+            self.assertIsNone(receiver.receive(frames[0], 1), "Cyphal transfer-ID duplicate must be suppressed")
+            return received, frames[0]
+
+    def test_all_application_transfers_use_native_cyphal(self):
+        vectors = can_peer.reference_vectors(self.library)
+        self.assertEqual(set(vectors), {"announce", "assign", "input", "status", "input_ack", "maximum_announce", "maximum_input"})
+        for name, frames in vectors.items():
+            with self.subTest(message=name):
+                self.assertEqual(len(frames), 1)
+                frame = frames[0]
+                raw = bytes.fromhex(frame["data"])
+                self.assertEqual(len(raw), frame["length"])
+                self.assertEqual(raw[-1] & 0xE0, 0xE0, "single-frame Cyphal tail")
+                self.assertNotEqual(int(frame["id"], 16) & 0x1FFFF800, 0x1A500000)
+                self.assertFalse(raw.startswith(b"OG\x02"), "private framing is retired")
+
+    def test_assignment_preserves_identity_session_and_transport_source(self):
+        value = can_peer.message(can_peer.ASSIGN, self.unit, 100, node=1, lease=0x10001, epoch=0x10000)
+        received, frame = self.roundtrip(value)
+        self.assertEqual((bytes(received.identity), received.boot, received.node, received.lease, received.epoch),
+                         (self.unit, 100, 1, 0x10001, 0x10000))
+        self.assertNotEqual(received.source, received.node)
+        frame.extended = False
+        with can_peer.Peer(self.unit, 100, self.library) as receiver:
+            self.assertIsNone(receiver.receive(frame, 0))
 
     def test_reserved_identity_is_rejected(self):
         for value in ("0" * 32, "f" * 32, "ab " * 10 + "ab", "12" * 15):
             with self.subTest(identity=value), self.assertRaises(ValueError):
                 can_peer.identity(value)
 
-    def test_direct_usb_uses_heartbeat(self):
-        unit = can_peer.identity("00112233445566778899aabbccddeeff")
+    def test_direct_usb_uses_status(self):
         with self.assertRaisesRegex(ValueError, "ownership"):
-            can_peer.frame(can_peer.INPUT, unit, 1, node=1, lease=1, direct=True)
-        _, raw = can_peer.frame(can_peer.HEARTBEAT, unit, 1, node=1, lease=1, direct=True)
-        self.assertEqual(raw[5], 1)
+            can_peer.message(can_peer.INPUT, self.unit, 100, node=1, lease=1, direct=True)
+        received, _ = self.roundtrip(can_peer.message(can_peer.HEARTBEAT, self.unit, 100,
+                                                     node=1, lease=1, sequence=9, direct=True))
+        self.assertEqual(received.direct, 1)
 
     def test_ack_echoes_compact_delivered_input(self):
-        values = can_peer.reference_vectors()
-        raw = bytes.fromhex(values["input_ack"]["data"])
-        boot, node, lease, sequence, report = can_peer.decode_ack(int(values["input_ack"]["id"], 16), raw)
-        self.assertEqual((boot, node, lease, sequence), (0x10203040, 1, 0x11223344, 9))
-        self.assertEqual(report, bytes.fromhex("053412ffff") + bytes(29))
-        corrupt = bytearray(raw)
-        corrupt[54] = 1
-        import zlib
-        corrupt[60:] = zlib.crc32(corrupt[:-4]).to_bytes(4, "little")
-        with self.assertRaisesRegex(ValueError, "reserved"):
-            can_peer.decode_ack(int(values["input_ack"]["id"], 16), corrupt)
+        received, _ = self.roundtrip(can_peer.message(can_peer.INPUT_ACK, self.unit, 100, node=1,
+                                                     lease=0x10001, sequence=9, report=bytes.fromhex("053412ffff")))
+        self.assertEqual((received.boot, received.node, received.lease, received.sequence), (100, 1, 0x10001, 9))
+        self.assertEqual(bytes(received.report), bytes.fromhex("053412ffff") + bytes(29))
+        self.assertEqual(bytes(received.identity), bytes(16))
+
+    def test_maximum_announcement_preserves_full_profile(self):
+        received, _ = self.roundtrip(can_peer.message(can_peer.ANNOUNCE, self.unit, 100, buttons=128, hats=4,
+                                                     usages=tuple(range(0x30, 0x38)), neutrals=tuple(i * 9000 for i in range(8))))
+        self.assertEqual((received.buttons, received.axes, received.hats), (128, 8, 4))
+        self.assertEqual(tuple(received.usages), tuple(range(0x30, 0x38)))
+        self.assertEqual(tuple(received.neutrals), tuple(i * 9000 for i in range(8)))
+
+    def test_socketcan_backpressure_retains_frame_for_retry(self):
+        value = can_peer.message(can_peer.INPUT, self.unit, 100, node=1, lease=1, sequence=9)
+        _, frame = self.roundtrip(value)
+        bus = mock.Mock()
+        bus.send.side_effect = [BlockingIOError(errno.EAGAIN, "temporary backpressure"), OSError(errno.ENOBUFS, "full"), 72]
+        self.assertFalse(can_peer.send_frame(bus, frame))
+        self.assertFalse(can_peer.send_frame(bus, frame))
+        self.assertTrue(can_peer.send_frame(bus, frame))
+        self.assertEqual(bus.send.call_args_list[0], bus.send.call_args_list[1])
+        self.assertEqual(bus.send.call_args_list[1], bus.send.call_args_list[2])
+        packet = bus.send.call_args.args[0]
+        decoded = can_peer.receive_frame(packet)
+        self.assertEqual((decoded.id, decoded.length, decoded.fd, decoded.brs),
+                         (frame.id, frame.length, frame.fd, frame.brs))
+        self.assertEqual(bytes(decoded.data), bytes(frame.data))
+
+    def test_socketcan_accepts_classic_and_fd_without_brs(self):
+        classic = can_peer.CLASSIC_FRAME.pack(0x123456 | can_peer.EFF, 8, bytes(range(8)))
+        received = can_peer.receive_frame(classic)
+        self.assertEqual((received.id, received.length, received.fd, received.brs), (0x123456, 8, 0, 0))
+        fd = can_peer.FD_FRAME.pack(0x123456 | can_peer.EFF, 12, 0, 0, 0, bytes(range(12)))
+        received = can_peer.receive_frame(fd)
+        self.assertEqual((received.length, received.fd, received.brs), (12, 1, 0))
+        self.assertIsNone(can_peer.receive_frame(can_peer.CLASSIC_FRAME.pack(0x123456, 8, bytes(8))))
+
+    def test_reset_discards_queued_frames_and_retains_transport_counters(self):
+        value = can_peer.message(can_peer.INPUT, self.unit, 100, node=1, lease=1, sequence=9)
+        with can_peer.Peer(self.unit, 100, self.library) as peer:
+            source = peer.node
+            self.assertTrue(peer.send(value, 0))
+            peer.reset()
+            self.assertEqual(peer.node, source)
+            self.assertEqual(list(peer.frames()), [])
+            self.assertTrue(peer.send(value, 1))
+            frames = list(peer.frames())
+            self.assertEqual(len(frames), 1)
+            self.assertEqual(frames[0].data[frames[0].length - 1] & 31, 1)
 
     def test_cockpit_snapshots_use_matching_observed_profile(self):
         executable = os.environ.get("OSG_GATEWAY_TEST")
@@ -70,7 +122,7 @@ class ReferencePeerTest(unittest.TestCase):
         responses = json.loads(subprocess.check_output([executable, "--cockpit-vectors"], text=True))
         for name, response in responses.items():
             state = response["state"]
-            self.assertEqual(state["protocol"], 2)
+            self.assertEqual((state["protocol"], state["canProtocol"]), (2, 3))
             for module in state["modules"]:
                 profile = module["profile"]
                 report = bytes.fromhex(module["report"])
@@ -85,45 +137,6 @@ class ReferencePeerTest(unittest.TestCase):
         self.assertFalse(responses["profile_updated_pending"]["state"]["modules"][0]["profileMatch"])
         self.assertEqual(responses["stale_epoch"]["error"], "stale_epoch")
         self.assertFalse(responses["offline"]["state"]["modules"][0]["online"])
-
-    def test_live_peer_recovers_from_transmit_backpressure(self):
-        args = argparse.Namespace(identity="00112233445566778899aabbccddeeff",
-                                  buttons=3, axes=2, hats=0, hat_values="", show_acks=False, axis_values="", buttons_mask=0,
-                                  direct_usb=False, interface="can0", duration=1.5)
-        unit = can_peer.identity(args.identity)
-        can_id, data = can_peer.frame(can_peer.ASSIGN, unit, 1, node=1, lease=2, epoch=3)
-        bus = mock.MagicMock()
-        bus.recv.return_value = can_peer.FD_FRAME.pack(can_id | can_peer.EFF, 48,
-                                                      can_peer.BRS, 0, 0, data)
-        input_sequences = []
-        announcements = []
-
-        def send(packet):
-            _, _, _, _, _, payload = can_peer.FD_FRAME.unpack(packet)
-            if payload[3] == can_peer.ANNOUNCE:
-                announcements.append(packet)
-                if len(announcements) == 1:
-                    raise BlockingIOError(errno.EAGAIN, "temporary transmit backpressure")
-            elif payload[3] == can_peer.INPUT:
-                input_sequences.append(int.from_bytes(payload[16:20], "little"))
-                if len(input_sequences) == 1:
-                    raise OSError(errno.ENOBUFS, "CAN queue full")
-            return len(packet)
-
-        bus.send.side_effect = send
-        constants = dict(AF_CAN=29, CAN_RAW=1, SOL_CAN_RAW=101, CAN_RAW_FD_FRAMES=5)
-        ticks = itertools.count()
-        with mock.patch.multiple(can_peer.socket, create=True, **constants), \
-             mock.patch.object(can_peer.socket, "socket") as factory, \
-             mock.patch.object(can_peer.secrets, "randbelow", return_value=0), \
-             mock.patch.object(can_peer.time, "monotonic", side_effect=lambda: next(ticks) * 0.01), \
-             mock.patch.object(can_peer.select, "select", return_value=([bus], [], [])), \
-             mock.patch("builtins.print"):
-            factory.return_value.__enter__.return_value = bus
-            can_peer.run_peer(args)
-        self.assertGreaterEqual(len(announcements), 2)
-        self.assertGreaterEqual(len(input_sequences), 2)
-        self.assertEqual(input_sequences, list(range(1, len(input_sequences) + 1)))
 
 
 if __name__ == "__main__":

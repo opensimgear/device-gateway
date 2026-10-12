@@ -3,7 +3,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef struct { uint32_t id; uint8_t size; uint8_t data[64]; } board_can_frame_t;
+typedef struct {
+    uint32_t id,deadline_ms;
+    uint8_t size;
+    bool fd,brs,deadline_valid;
+    uint8_t data[64];
+} board_can_frame_t;
 typedef struct {
     uint32_t rx, tx, rx_dropped, tx_dropped, tx_failed, recoveries;
     uint32_t hal_error;
@@ -20,6 +25,7 @@ void board_fault(void);
 bool board_can_receive(board_can_frame_t *frame);
 bool board_can_enqueue(const board_can_frame_t *frame);
 void board_can_task(uint32_t now);
+void board_can_reset(uint32_t now); /* Flush software/controller state after CAN node-ID migration. */
 board_can_diagnostics_t board_can_diagnostics(void);
 
 /* Opaque portable registry payload in a committed, CRC-protected two-page journal. */

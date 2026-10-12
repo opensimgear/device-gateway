@@ -2,6 +2,7 @@
 #include "gateway_usb.h"
 #include "opensimgear/gateway.h"
 #include "opensimgear/gateway_cockpit.h"
+#include "opensimgear/cyphal.h"
 #include "opensimgear/line.h"
 #include "tusb.h"
 #include <stdarg.h>
@@ -9,6 +10,7 @@
 #include <string.h>
 
 static osg_gateway_t gateway;
+static osg_cyphal_t cyphal;
 static uint8_t sent[OSG_GW_MAX_MODULES][OSG_GW_MAX_REPORT_SIZE];
 static bool sent_valid[OSG_GW_MAX_MODULES], hid_inflight;
 static uint32_t last_report[OSG_GW_MAX_MODULES];
@@ -18,6 +20,20 @@ static osg_gateway_delivery_t inflight_delivery;
 static size_t response_size,response_offset;
 static bool apply_pending,layout_detached;
 static uint32_t apply_at,reattach_at;
+
+static bool can_send(void *context,const osg_gateway_frame_t *frame) {
+    (void)context;
+    board_can_frame_t outgoing={.id=frame->id,.size=frame->length,.fd=frame->fd,.brs=frame->brs,
+        .deadline_ms=frame->deadline_ms,.deadline_valid=frame->deadline_valid};
+    memcpy(outgoing.data,frame->data,frame->length);
+    return board_can_enqueue(&outgoing);
+}
+static void migrate_can_source(uint32_t now,bool running) {
+    /* Already admitted controller frames still contain the old source ID. */
+    board_can_reset(now); osg_cyphal_reset(&cyphal); osg_gateway_bus_reset(&gateway);
+    memset(sent_valid,0,sizeof sent_valid); inflight_delivery.valid=false;
+    osg_gateway_set_running(&gateway,running);
+}
 
 static void invalidate_reports(void) {
     memset(sent_valid,0,sizeof sent_valid); hid_inflight=false; inflight_delivery.valid=false;
@@ -40,7 +56,7 @@ static bool save_registry(void) {
 }
 static void identity(void) {
     char uid[25]; board_uid_hex(uid);
-    append("gatewayType=stm32-can-gateway protocol=2 canProtocol=2 firmware=0.2.0 board=gateway_g0b1cb_rev_a identity=%s epoch=%lu maxModules=%u\r\n",
+    append("gatewayType=stm32-can-gateway protocol=2 canProtocol=3 firmware=0.3.0 board=gateway_g0b1cb_rev_a identity=%s epoch=%lu maxModules=%u\r\n",
         uid,(unsigned long)gateway.epoch,OSG_GW_MAX_MODULES);
 }
 static bool cockpit_save(void *context) { (void)context; return save_registry(); }
@@ -130,6 +146,10 @@ static void initialize_gateway(void) {
     }
     if(epoch>UINT32_MAX-0x10000U || !osg_gateway_init(&gateway,epoch+0x10000U,registry) || !save_registry() ||
        !gateway_usb_prepare(&gateway)) board_fault();
+    char uid[33]; board_uid_hex(uid); memcpy(uid+24,"47575459",9);
+    osg_gateway_identity_t unique_id;
+    if(!osg_gateway_identity_parse(uid,&unique_id) ||
+       !osg_cyphal_init(&cyphal,&unique_id,gateway.epoch,"org.opensimgear.gateway",can_send,NULL)) board_fault();
 }
 int main(void) {
     board_init(); initialize_gateway();
@@ -148,6 +168,8 @@ int main(void) {
             if(attached) tud_connect(); else tud_disconnect();
         }
         tud_task();
+        /* USB completion callbacks may tick the core at a later millisecond. */
+        now=board_millis();
         bool running=attached && tud_mounted() && !tud_suspended();
         if(running!=active || running!=gateway.running) {
             active=running; invalidate_reports(); osg_gateway_set_running(&gateway,running);
@@ -157,18 +179,27 @@ int main(void) {
         board_can_diagnostics_t can=board_can_diagnostics();
         bool can_fault=can.bus_off || can.recovering;
         if((can_fault && !was_can_fault) || can.recoveries!=previous_recoveries) {
-            osg_gateway_bus_reset(&gateway); memset(sent_valid,0,sizeof sent_valid);
+            osg_cyphal_reset(&cyphal); osg_gateway_bus_reset(&gateway); memset(sent_valid,0,sizeof sent_valid);
             osg_gateway_set_running(&gateway,running);
         }
         was_can_fault=can_fault; previous_recoveries=can.recoveries;
         for(unsigned budget=0;budget<4;budget++) {
             board_can_frame_t incoming; if(!board_can_receive(&incoming)) break;
-            osg_gateway_frame_t frame={.id=incoming.id,.length=incoming.size,.extended=true,.fd=true,.brs=true},reply;
+            osg_gateway_frame_t frame={.id=incoming.id,.length=incoming.size,.extended=true,
+                .fd=incoming.fd,.brs=incoming.brs};
+            osg_gateway_message_t message,reply;
             memcpy(frame.data,incoming.data,incoming.size);
-            if(osg_gateway_receive(&gateway,&frame,now,&reply)==OSG_GW_RX_ASSIGNMENT) {
-                board_can_frame_t outgoing={.id=reply.id,.size=reply.length};
-                memcpy(outgoing.data,reply.data,reply.length); (void)board_can_enqueue(&outgoing);
-            }
+            uint8_t source=osg_cyphal_node_id(&cyphal);
+            bool received=osg_cyphal_receive(&cyphal,&frame,now,&message);
+            if(source!=osg_cyphal_node_id(&cyphal)) { migrate_can_source(now,running); break; }
+            if(received &&
+               osg_gateway_receive(&gateway,&message,now,&reply)==OSG_GW_RX_ASSIGNMENT)
+                (void)osg_cyphal_send(&cyphal,&reply,now);
+        }
+        if(!can_fault) {
+            uint8_t source=osg_cyphal_node_id(&cyphal);
+            osg_cyphal_tick(&cyphal,now);
+            if(source!=osg_cyphal_node_id(&cyphal)) migrate_can_source(now,running);
         }
         bool connected=attached && tud_cdc_connected();
         if(connected!=serial_open) {
@@ -209,11 +240,10 @@ void tud_hid_report_complete_cb(uint8_t instance,const uint8_t *report,uint16_t 
     /* tud_task runs before the event loop's next tick. Enforce freshness at
      * actual completion time, including the exact timeout boundary. */
     osg_gateway_tick(&gateway,board_millis());
-    osg_gateway_frame_t ack;
+    osg_gateway_message_t ack;
     if(hid_inflight && board_usb_present() && tud_mounted() && !tud_suspended() &&
        osg_gateway_delivery_complete(&gateway,&inflight_delivery,report,length,&ack)) {
-        board_can_frame_t outgoing={.id=ack.id,.size=ack.length};
-        memcpy(outgoing.data,ack.data,ack.length); (void)board_can_enqueue(&outgoing);
+        (void)osg_cyphal_send(&cyphal,&ack,board_millis());
     }
     hid_inflight=false; inflight_delivery.valid=false;
 }
