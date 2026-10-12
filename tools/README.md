@@ -1,6 +1,6 @@
 # Gateway CAN test peer
 
-`can_peer.py` implements a module peer for the [private CAN FD bring-up protocol](../firmware/docs/can-fd-bringup-v1.md). Python 3.10+ is sufficient. It does not implement Cyphal or the Cockpit Pico simulator protocol, and it does not flash a module.
+`can_peer.py` implements a module peer for the [CAN FD v2 prototype contract](../firmware/docs/can-fd-v2.md). Python 3.10+ is sufficient. It does not implement Cyphal or the Cockpit Pico simulator protocol, and it does not flash a module.
 
 Print the exact reference frames on any host:
 
@@ -20,6 +20,10 @@ Open the gateway CDC console with DTR asserted, send `inventory`, then `register
 ```sh
 python3 tools/can_peer.py --interface can0 --buttons-mask 0x5 --axis-values 0x1234,0xffff
 ```
+
+Use `--hats 4 --hat-values 0,7,8,8` for packed hats, and `--show-acks` to print
+reports acknowledged only after successful gateway USB delivery. Maximum profiles
+support `--buttons 128 --hats 4 --axes 8`.
 
 The new random module boot session revokes its old lease. Stopping the process should restore neutral HID values after the gateway's 250 ms input timeout; the registry slot and USB layout remain present. Restart with `--direct-usb` to test direct USB input ownership: the peer sends ownership heartbeats and routed HID remains neutral. Each additional peer needs a unique `--identity`. Limit live tests to the board's documented total power budget, independent of the firmware's ten-module capacity.
 

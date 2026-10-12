@@ -1,6 +1,7 @@
 #include "board.h"
 #include "gateway_usb.h"
 #include "opensimgear/gateway.h"
+#include "opensimgear/gateway_cockpit.h"
 #include "opensimgear/line.h"
 #include "tusb.h"
 #include <stdarg.h>
@@ -12,13 +13,14 @@ static uint8_t sent[OSG_GW_MAX_MODULES][OSG_GW_MAX_REPORT_SIZE];
 static bool sent_valid[OSG_GW_MAX_MODULES], hid_inflight;
 static uint32_t last_report[OSG_GW_MAX_MODULES];
 static unsigned next_slot;
-static char response[4096];
+static char response[OSG_GW_COCKPIT_RESPONSE_CAPACITY];
+static osg_gateway_delivery_t inflight_delivery;
 static size_t response_size,response_offset;
 static bool apply_pending,layout_detached;
 static uint32_t apply_at,reattach_at;
 
 static void invalidate_reports(void) {
-    memset(sent_valid,0,sizeof sent_valid); hid_inflight=false;
+    memset(sent_valid,0,sizeof sent_valid); hid_inflight=false; inflight_delivery.valid=false;
     osg_gateway_set_running(&gateway,false);
 }
 static void append(const char *format,...) {
@@ -38,20 +40,33 @@ static bool save_registry(void) {
 }
 static void identity(void) {
     char uid[25]; board_uid_hex(uid);
-    append("gatewayType=stm32-can-bringup protocol=1 board=gateway_g0b1cb_rev_a identity=%s epoch=%lu maxModules=%u\r\n",
+    append("gatewayType=stm32-can-gateway protocol=2 canProtocol=2 firmware=0.2.0 board=gateway_g0b1cb_rev_a identity=%s epoch=%lu maxModules=%u\r\n",
         uid,(unsigned long)gateway.epoch,OSG_GW_MAX_MODULES);
 }
+static bool cockpit_save(void *context) { (void)context; return save_registry(); }
+static void cockpit_command(const char *line,uint32_t now) {
+    osg_gateway_cockpit_request_t request;
+    const char *error=NULL;
+    bool apply=false;
+    if(!osg_gateway_cockpit_parse(line,&request)) error="invalid_request";
+    else error=osg_gateway_cockpit_execute(&gateway,&request,cockpit_save,NULL,&apply);
+    if(apply) { apply_pending=true; apply_at=now+100U; }
+    char uid[25]; board_uid_hex(uid);
+    response_size=osg_gateway_cockpit_response(&gateway,uid,request.id,error,response,sizeof response);
+    if(!response_size) append("{\"id\":%lu,\"ok\":false,\"error\":\"response_overflow\",\"state\":null}\r\n",(unsigned long)request.id);
+}
 static void command(const char *line,uint32_t now) {
-    if(!strcmp(line,"hello") || !strcmp(line,"identity") || !strcmp(line,"info")) identity();
-    else if(!strcmp(line,"help")) append("identity | inventory | registry | register <32hex> | unregister <32hex> | save | apply | diagnostics\r\n");
+    if(!strncmp(line,"cockpit ",8)) cockpit_command(line,now);
+    else if(!strcmp(line,"hello") || !strcmp(line,"identity") || !strcmp(line,"info")) identity();
+    else if(!strcmp(line,"help")) append("identity | inventory | registry | register <32hex> | unregister <32hex> | save | apply | diagnostics | cockpit <id> snapshot | cockpit <id> <epoch> register <32hex>|unregister <32hex>|save|apply\r\n");
     else if(!strcmp(line,"inventory")) {
         identity();
         for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) {
             const osg_gateway_module_t *module=&gateway.modules[i]; if(!module->occupied) continue;
             char id[33]; osg_gateway_identity_format(&module->identity,id);
-            append("module identity=%s node=%u online=%u directUsb=%u input=%u axes=%u buttons=%u revision=%u registered=%d active=%d lastSeenMs=%lu\r\n",
+            append("module identity=%s node=%u online=%u directUsb=%u input=%u axes=%u buttons=%u hats=%u revision=%u registered=%d active=%d lastSeenMs=%lu\r\n",
                 id,module->node,module->online,module->direct_usb,module->has_input,module->profile.axis_count,
-                module->profile.button_count,module->profile.revision,
+                module->profile.button_count,module->profile.hat_count,module->profile.revision,
                 osg_gateway_find_slot(&gateway.pending,&module->identity),
                 osg_gateway_find_slot(&gateway.active,&module->identity),(unsigned long)(now-module->last_seen));
         }
@@ -93,11 +108,13 @@ static void hid_task(uint32_t now) {
     for(unsigned tried=0;tried<OSG_GW_MAX_MODULES;tried++) {
         unsigned slot=next_slot; next_slot=(next_slot+1)%OSG_GW_MAX_MODULES;
         uint8_t report[OSG_GW_MAX_REPORT_SIZE];
-        size_t length=osg_gateway_report(&gateway,slot,report,sizeof report);
+        osg_gateway_delivery_t delivery;
+        size_t length=osg_gateway_delivery_prepare(&gateway,slot,report,sizeof report,&delivery);
         if(!length) continue;
         if(sent_valid[slot] && !memcmp(report,sent[slot],length) && (uint32_t)(now-last_report[slot])<10U) continue;
         if(tud_hid_report((uint8_t)(slot+1),report,(uint16_t)length)) {
             memcpy(sent[slot],report,length); sent_valid[slot]=true; last_report[slot]=now; hid_inflight=true;
+            inflight_delivery=delivery;
         }
         return;
     }
@@ -156,7 +173,10 @@ int main(void) {
         bool connected=attached && tud_cdc_connected();
         if(connected!=serial_open) {
             serial_open=connected; osg_line_init(&line,line_buffer,sizeof line_buffer);
-            response_size=response_offset=0; tud_cdc_read_flush();
+            response_size=response_offset=0;
+            /* DTR and the first host write may arrive in the same USB task.
+             * Preserve that request on open; discard old input only on close. */
+            if(!connected) tud_cdc_read_flush();
             if(connected) { identity(); append("type help for commands\r\n"); }
         }
         if(connected && response_offset<response_size) {
@@ -185,11 +205,23 @@ void tud_umount_cb(void) { invalidate_reports(); }
 void tud_suspend_cb(bool remote_wakeup_en) { (void)remote_wakeup_en; invalidate_reports(); }
 void tud_resume_cb(void) { invalidate_reports(); }
 void tud_hid_report_complete_cb(uint8_t instance,const uint8_t *report,uint16_t length) {
-    (void)report; (void)length; if(!instance) hid_inflight=false;
+    if(instance) return;
+    /* tud_task runs before the event loop's next tick. Enforce freshness at
+     * actual completion time, including the exact timeout boundary. */
+    osg_gateway_tick(&gateway,board_millis());
+    osg_gateway_frame_t ack;
+    if(hid_inflight && board_usb_present() && tud_mounted() && !tud_suspended() &&
+       osg_gateway_delivery_complete(&gateway,&inflight_delivery,report,length,&ack)) {
+        board_can_frame_t outgoing={.id=ack.id,.size=ack.length};
+        memcpy(outgoing.data,ack.data,ack.length); (void)board_can_enqueue(&outgoing);
+    }
+    hid_inflight=false; inflight_delivery.valid=false;
 }
 void tud_hid_report_failed_cb(uint8_t instance,hid_report_type_t type,const uint8_t *report,uint16_t length) {
     (void)report; (void)length;
-    if(!instance && type==HID_REPORT_TYPE_INPUT) { memset(sent_valid,0,sizeof sent_valid); hid_inflight=false; }
+    if(!instance && type==HID_REPORT_TYPE_INPUT) {
+        memset(sent_valid,0,sizeof sent_valid); hid_inflight=false; inflight_delivery.valid=false;
+    }
 }
 uint16_t tud_hid_get_report_cb(uint8_t instance,uint8_t id,hid_report_type_t type,uint8_t *buffer,uint16_t length) {
     if(instance || type!=HID_REPORT_TYPE_INPUT || !buffer || !length) return 0;

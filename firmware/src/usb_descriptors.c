@@ -13,7 +13,7 @@ bool gateway_usb_prepare(const osg_gateway_t *gateway) {
 }
 const uint8_t *tud_descriptor_device_cb(void) {
     static tusb_desc_device_t descriptor;
-    descriptor=osg_usb_device_descriptor(OSG_USB_VID,OSG_USB_PID,0x0001);
+    descriptor=osg_usb_device_descriptor(OSG_USB_VID,OSG_USB_PID,0x0200);
     return (const uint8_t *)&descriptor;
 }
 const uint8_t *tud_descriptor_configuration_cb(uint8_t index) {
@@ -33,7 +33,7 @@ const uint16_t *tud_descriptor_string_cb(uint8_t index,uint16_t langid) {
         case 1: text="OpenSimGear"; break;
         case 2: text="CAN Gateway Rev A"; break;
         case 3: board_uid_hex(uid); text=uid; break;
-        case 4: text="Gateway Bring-up Console"; break;
+        case 4: text="Gateway Cockpit Console"; break;
         case 5: text="Registered CAN Controllers"; break;
         default: return NULL;
     }

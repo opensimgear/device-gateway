@@ -2,13 +2,14 @@
 #define OSG_GATEWAY_H
 #include "opensimgear/gateway_registry.h"
 enum { OSG_GW_INPUT_TIMEOUT_MS=250, OSG_GW_OFFLINE_TIMEOUT_MS=1500,
-       OSG_GW_DESCRIPTOR_CAPACITY=1024 };
+       OSG_GW_DESCRIPTOR_CAPACITY=1536 };
 typedef struct {
     bool occupied, online, direct_usb, has_input, has_sequence;
     osg_gateway_identity_t identity;
     osg_gateway_profile_t profile;
     uint8_t node;
-    uint32_t boot_session, lease, sequence, last_seen, last_input;
+    uint32_t boot_session, lease, sequence, input_sequence, last_seen, last_input;
+    uint64_t delivery_generation;
     uint8_t report[OSG_GW_MAX_REPORT_SIZE];
 } osg_gateway_module_t;
 typedef struct {
@@ -16,8 +17,18 @@ typedef struct {
     osg_gateway_registry_t pending, active;
     uint32_t epoch, lease_counter;
     bool running;
+    uint64_t run_generation;
     uint32_t accepted_frames, rejected_frames;
 } osg_gateway_t;
+/* Immutable snapshot of an eligible input submitted to the USB interrupt endpoint. */
+typedef struct {
+    bool valid;
+    uint8_t slot,node,length;
+    osg_gateway_identity_t identity;
+    uint32_t boot_session,lease,sequence;
+    uint64_t run_generation,delivery_generation;
+    uint8_t report[OSG_GW_MAX_REPORT_SIZE];
+} osg_gateway_delivery_t;
 typedef enum { OSG_GW_RX_REJECTED, OSG_GW_RX_ACCEPTED, OSG_GW_RX_ASSIGNMENT,
                OSG_GW_RX_FULL } osg_gateway_receive_result_t;
 /* Nonzero epoch is a persisted lease block base, advanced by65536 per boot.
@@ -38,4 +49,9 @@ void osg_gateway_apply_layout(osg_gateway_t *);
 /* Active slot indexes are stable; HID report ID is slot+1. Returns0 for empty. */
 size_t osg_gateway_report(const osg_gateway_t *, unsigned slot, uint8_t *, size_t);
 size_t osg_gateway_descriptor(const osg_gateway_t *, uint8_t *, size_t);
+/* Neutral fallback reports remain deliverable, but never qualify for a CAN ACK. */
+size_t osg_gateway_delivery_prepare(const osg_gateway_t *, unsigned slot, uint8_t *, size_t, osg_gateway_delivery_t *);
+/* Invoke only from a successful USB interrupt completion. delivered includes its report ID. */
+bool osg_gateway_delivery_complete(const osg_gateway_t *, const osg_gateway_delivery_t *,
+                                   const uint8_t *delivered, size_t length, osg_gateway_frame_t *ack);
 #endif

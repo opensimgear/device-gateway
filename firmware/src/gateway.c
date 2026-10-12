@@ -12,7 +12,7 @@ int osg_gateway_find_slot(const osg_gateway_registry_t *r,const osg_gateway_iden
     return -1;
 }
 static void neutral(osg_gateway_module_t *m) {
-    m->has_input=false; memset(m->report,0,sizeof m->report);
+    m->has_input=false; m->delivery_generation++; memset(m->report,0,sizeof m->report);
 }
 static void revoke(osg_gateway_module_t *m) {
     neutral(m); m->online=false; m->node=0; m->lease=0; m->has_sequence=false;
@@ -39,12 +39,15 @@ void osg_gateway_tick(osg_gateway_t *g,uint32_t now) {
 void osg_gateway_set_running(osg_gateway_t *g,bool running) {
     if(!g) return;
     /* Every transition requires an input newer than the last accepted sequence. */
-    if(g->running!=running || !running) for(unsigned i=0;i<10;i++) neutral(&g->modules[i]);
+    if(g->running!=running || !running) {
+        g->run_generation++;
+        for(unsigned i=0;i<10;i++) neutral(&g->modules[i]);
+    }
     g->running=running;
 }
 void osg_gateway_bus_reset(osg_gateway_t *g) {
     if(!g) return;
-    g->running=false;
+    g->running=false; g->run_generation++;
     for(unsigned i=0;i<10;i++) revoke(&g->modules[i]);
 }
 static int available_inventory(const osg_gateway_t *g,uint32_t now) {
@@ -78,23 +81,22 @@ static bool newer(uint32_t value,uint32_t previous) {
     uint32_t delta=value-previous;
     return delta!=0 && delta<UINT32_C(0x80000000);
 }
-static bool input_valid(const osg_gateway_message_t *msg,const osg_gateway_profile_t *profile) {
-    size_t length=osg_gateway_profile_report_size(profile);
-    if(!length) return false;
-    if(profile->button_count%8) {
-        uint8_t forbidden=(uint8_t)(0xffU<<(profile->button_count%8));
-        if(msg->report[profile->button_count/8]&forbidden) return false;
-    }
-    for(size_t i=length;i<24;i++) if(msg->report[i]) return false;
-    return true;
-}
 osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *g,const osg_gateway_frame_t *frame,
                                                 uint32_t now,osg_gateway_frame_t *reply) {
     if(!g) return OSG_GW_RX_REJECTED;
     osg_gateway_message_t msg;
-    if(!osg_gateway_frame_decode(frame,&msg) || msg.type==OSG_GW_ASSIGN) goto rejected;
+    if(!osg_gateway_frame_decode(frame,&msg) || msg.type==OSG_GW_ASSIGN || msg.type==OSG_GW_INPUT_ACK) goto rejected;
     osg_gateway_tick(g,now);
-    int index=osg_gateway_find_module(g,&msg.identity);
+    int index=-1;
+    if(msg.type==OSG_GW_INPUT) {
+        for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) {
+            const osg_gateway_module_t *m=&g->modules[i];
+            if(m->occupied && m->online && m->node==msg.node && m->boot_session==msg.boot_session && m->lease==msg.lease) {
+                if(index>=0) goto rejected; /* A compact route must resolve unambiguously. */
+                index=(int)i;
+            }
+        }
+    } else index=osg_gateway_find_module(g,&msg.identity);
     if(msg.type==OSG_GW_ANNOUNCE) {
         if(!reply) goto rejected;
         if(index<0) index=available_inventory(g,now);
@@ -124,14 +126,17 @@ osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *g,const osg_gate
     osg_gateway_module_t *m=&g->modules[index];
     if(!m->online || m->node!=msg.node || m->boot_session!=msg.boot_session || m->lease!=msg.lease ||
        (m->has_sequence && !newer(msg.sequence,m->sequence)) ||
-       (msg.type==OSG_GW_INPUT && !input_valid(&msg,&m->profile))) goto rejected;
+       (msg.type==OSG_GW_INPUT && !osg_gateway_profile_report_valid(&m->profile,msg.report))) goto rejected;
     m->sequence=msg.sequence; m->has_sequence=true; m->last_seen=now;
     if(msg.type==OSG_GW_HEARTBEAT) {
         m->direct_usb=msg.direct_usb;
         if(m->direct_usb) neutral(m);
     } else {
         /* INPUT cannot overrule direct-USB ownership. A heartbeat/announce releases it. */
-        if(g->running && !m->direct_usb) { memcpy(m->report,msg.report,sizeof m->report); m->has_input=true; m->last_input=now; }
+        if(g->running && !m->direct_usb) {
+            memcpy(m->report,msg.report,sizeof m->report); m->has_input=true;
+            m->last_input=now; m->input_sequence=msg.sequence;
+        }
     }
     g->accepted_frames++; return OSG_GW_RX_ACCEPTED;
 rejected:
@@ -172,12 +177,8 @@ size_t osg_gateway_report(const osg_gateway_t *g,unsigned slot,uint8_t *out,size
     const osg_gateway_slot_t *s=&g->active.slots[slot];
     size_t length=osg_gateway_profile_report_size(&s->profile);
     if(!length || capacity<length) return 0;
-    memset(out,0,length);
-    unsigned offset=(s->profile.button_count+7)/8;
-    for(unsigned a=0;a<s->profile.axis_count;a++) {
-        uint16_t value=s->profile.axis_neutral[a];
-        out[offset+2*a]=(uint8_t)value; out[offset+2*a+1]=(uint8_t)(value>>8);
-    }
+    uint8_t neutral_report[OSG_GW_MAX_REPORT_SIZE];
+    osg_gateway_profile_neutral(&s->profile,neutral_report); memcpy(out,neutral_report,length);
     int module=osg_gateway_find_module(g,&s->identity);
     if(module>=0) {
         const osg_gateway_module_t *m=&g->modules[module];
@@ -185,6 +186,39 @@ size_t osg_gateway_report(const osg_gateway_t *g,unsigned slot,uint8_t *out,size
            osg_gateway_profile_equal(&m->profile,&s->profile)) memcpy(out,m->report,length);
     }
     return length;
+}
+size_t osg_gateway_delivery_prepare(const osg_gateway_t *g,unsigned slot,uint8_t *out,size_t capacity,osg_gateway_delivery_t *delivery) {
+    if(!delivery) return 0;
+    memset(delivery,0,sizeof *delivery);
+    size_t length=osg_gateway_report(g,slot,out,capacity);
+    if(!length) return 0;
+    const osg_gateway_slot_t *s=&g->active.slots[slot];
+    int index=osg_gateway_find_module(g,&s->identity);
+    if(index<0) return length;
+    const osg_gateway_module_t *m=&g->modules[index];
+    if(!g->running || !m->online || m->direct_usb || !m->has_input || !osg_gateway_profile_equal(&m->profile,&s->profile)) return length;
+    *delivery=(osg_gateway_delivery_t){.valid=true,.slot=(uint8_t)slot,.node=m->node,.length=(uint8_t)length,
+        .identity=m->identity,.boot_session=m->boot_session,.lease=m->lease,.sequence=m->input_sequence,
+        .run_generation=g->run_generation,.delivery_generation=m->delivery_generation};
+    memcpy(delivery->report,out,length); return length;
+}
+bool osg_gateway_delivery_complete(const osg_gateway_t *g,const osg_gateway_delivery_t *d,
+                                   const uint8_t *delivered,size_t length,osg_gateway_frame_t *ack) {
+    if(!g || !d || !d->valid || !delivered || !ack || !g->running || d->run_generation!=g->run_generation ||
+       d->slot>=OSG_GW_MAX_MODULES || length!=(size_t)d->length+1 || delivered[0]!=d->slot+1 ||
+       memcmp(delivered+1,d->report,d->length)) return false;
+    const osg_gateway_slot_t *s=&g->active.slots[d->slot];
+    if(!s->occupied || !osg_gateway_identity_equal(&s->identity,&d->identity)) return false;
+    int index=osg_gateway_find_module(g,&d->identity);
+    if(index<0) return false;
+    const osg_gateway_module_t *m=&g->modules[index];
+    if(!m->online || m->direct_usb || !m->has_input || m->node!=d->node || m->boot_session!=d->boot_session ||
+       m->lease!=d->lease || m->delivery_generation!=d->delivery_generation ||
+       !osg_gateway_profile_equal(&m->profile,&s->profile)) return false;
+    osg_gateway_message_t message={.type=OSG_GW_INPUT_ACK,.node=d->node,
+        .boot_session=d->boot_session,.lease=d->lease,.sequence=d->sequence};
+    memcpy(message.report,d->report,sizeof message.report);
+    return osg_gateway_frame_encode(&message,ack);
 }
 size_t osg_gateway_descriptor(const osg_gateway_t *g,uint8_t *out,size_t capacity) {
     if(!g || !out || !osg_gateway_registry_valid(&g->active)) return 0;
@@ -198,6 +232,11 @@ size_t osg_gateway_descriptor(const osg_gateway_t *g,uint8_t *out,size_t capacit
         if(p->button_count) {
             EMIT(0x05,9,0x19,1,0x29,p->button_count,0x15,0,0x25,1,0x75,1,0x95,p->button_count,0x81,2);
             if(p->button_count%8) EMIT(0x75,1,0x95,(uint8_t)(8-p->button_count%8),0x81,3);
+        }
+        if(p->hat_count) {
+            EMIT(0x05,1,0x09,0x39,0x15,0,0x25,7,0x35,0,0x46,0x3b,1,0x65,0x14,
+                 0x75,4,0x95,p->hat_count,0x81,0x42);
+            if(p->hat_count%2) EMIT(0x75,4,0x95,1,0x81,3);
         }
         if(p->axis_count) {
             EMIT(0x05,1,0x15,0,0x27,0xff,0xff,0,0,0x35,0,0x45,0,0x65,0,0x75,16,0x95,1);

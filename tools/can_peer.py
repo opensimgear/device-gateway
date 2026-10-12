@@ -18,8 +18,8 @@ import zlib
 BASE = 0x1A500000
 EFF = 0x80000000
 BRS = 1
-ANNOUNCE, ASSIGN, INPUT, HEARTBEAT = 1, 2, 3, 4
-LENGTHS = {ANNOUNCE: 64, ASSIGN: 48, INPUT: 64, HEARTBEAT: 48}
+ANNOUNCE, ASSIGN, INPUT, HEARTBEAT, INPUT_ACK = 1, 2, 3, 4, 5
+LENGTHS = {ANNOUNCE: 64, ASSIGN: 48, INPUT: 64, HEARTBEAT: 48, INPUT_ACK: 64}
 FD_FRAME = struct.Struct("=IBBBB64s")
 
 
@@ -36,16 +36,19 @@ def identity(text):
 
 
 def frame(kind, unit, boot, *, node=0, direct=False, buttons=0, usages=(),
-          neutrals=(), revision=1, lease=0, epoch=0, sequence=0, report=b""):
-    if kind not in LENGTHS or len(unit) != 16 or not any(unit) or unit == b"\xff" * 16:
-        raise ValueError("invalid message type or identity")
+          neutrals=(), hats=0, revision=1, lease=0, epoch=0, sequence=0, report=b""):
+    if kind not in LENGTHS:
+        raise ValueError("invalid message type")
+    compact = kind in (INPUT, INPUT_ACK)
+    if not compact and (len(unit) != 16 or not any(unit) or unit == b"\xff" * 16):
+        raise ValueError("invalid identity")
     if not 0 < boot <= 0xFFFFFFFF:
         raise ValueError("boot session must be nonzero uint32")
     if (kind == ANNOUNCE and node != 0) or (kind != ANNOUNCE and not 1 <= node <= 10):
         raise ValueError("invalid node for message type")
     if kind == ANNOUNCE:
-        if not 0 <= buttons <= 64 or not 0 <= len(usages) <= 8 or not (buttons or usages):
-            raise ValueError("profile needs 1..64 buttons and/or 1..8 axes")
+        if not 0 <= buttons <= 128 or not 0 <= hats <= 4 or not 0 <= len(usages) <= 8 or not (buttons or hats or usages):
+            raise ValueError("profile needs up to128 buttons,4 hats,8 axes and at least one control")
         if len(neutrals) != len(usages) or len(set(usages)) != len(usages):
             raise ValueError("axis usages must be unique and match the neutrals")
         if any(not 0x30 <= u <= 0x38 for u in usages) or any(not 0 <= n <= 65535 for n in neutrals):
@@ -54,31 +57,34 @@ def frame(kind, unit, boot, *, node=0, direct=False, buttons=0, usages=(),
             raise ValueError("profile revision must be nonzero uint16")
     elif not 0 < lease <= 0xFFFFFFFF:
         raise ValueError("lease must be nonzero uint32")
-    if direct and kind in (ASSIGN, INPUT):
+    if direct and kind in (ASSIGN, INPUT, INPUT_ACK):
         raise ValueError("direct USB ownership uses ANNOUNCE/HEARTBEAT, not INPUT")
     if kind == ASSIGN and not 0 < epoch <= 0xFFFFFFFF:
         raise ValueError("gateway epoch must be nonzero uint32")
-    if not 0 <= sequence <= 0xFFFFFFFF or len(report) > 24:
+    if not 0 <= sequence <= 0xFFFFFFFF or len(report) > 34:
         raise ValueError("invalid sequence or report length")
     data = bytearray(LENGTHS[kind])
-    data[:8] = bytes((0x4F, 0x47, 1, kind, node, int(direct), 0, 0))
-    data[8:24] = unit
-    struct.pack_into("<I", data, 24, boot)
-    if kind == ANNOUNCE:
-        struct.pack_into("<BBH", data, 28, buttons, len(usages), revision)
-        data[32:32 + len(usages)] = bytes(usages)
-        for i, neutral in enumerate(neutrals):
-            struct.pack_into("<H", data, 40 + i * 2, neutral)
+    data[:8] = bytes((0x4F, 0x47, 2, kind, node, int(direct), 0, 0))
+    if compact:
+        struct.pack_into("<III", data, 8, boot, lease, sequence)
+        data[20:20 + len(report)] = report
     else:
-        struct.pack_into("<II", data, 28, lease, epoch if kind == ASSIGN else sequence)
-        if kind == INPUT:
-            data[36:36 + len(report)] = report
+        data[8:24] = unit
+        struct.pack_into("<I", data, 24, boot)
+        if kind == ANNOUNCE:
+            struct.pack_into("<BBH", data, 28, buttons, len(usages), revision)
+            data[32:32 + len(usages)] = bytes(usages)
+            for i, neutral in enumerate(neutrals):
+                struct.pack_into("<H", data, 40 + i * 2, neutral)
+            data[56] = hats
+        else:
+            struct.pack_into("<II", data, 28, lease, epoch if kind == ASSIGN else sequence)
     struct.pack_into("<I", data, len(data) - 4, zlib.crc32(data[:-4]))
     return BASE | kind << 8 | node, bytes(data)
 
 
 def decode_assignment(can_id, data):
-    if len(data) != 48 or data[:4] != bytes((0x4F, 0x47, 1, ASSIGN)):
+    if len(data) != 48 or data[:4] != bytes((0x4F, 0x47, 2, ASSIGN)):
         raise ValueError("invalid assignment framing")
     node = data[4]
     if can_id != BASE | ASSIGN << 8 | node or not 1 <= node <= 10:
@@ -93,6 +99,22 @@ def decode_assignment(can_id, data):
     return data[8:24], boot, node, lease, epoch
 
 
+def decode_ack(can_id, data):
+    if len(data) != 64 or data[:4] != bytes((0x4F, 0x47, 2, INPUT_ACK)):
+        raise ValueError("invalid ACK framing")
+    node = data[4]
+    if can_id != BASE | INPUT_ACK << 8 | node or not 1 <= node <= 10:
+        raise ValueError("invalid ACK CAN ID")
+    if any(data[5:8]) or any(data[54:60]):
+        raise ValueError("invalid ACK reserved bytes")
+    if zlib.crc32(data[:-4]) != struct.unpack_from("<I", data, 60)[0]:
+        raise ValueError("ACK CRC mismatch")
+    boot, lease, sequence = struct.unpack_from("<III", data, 8)
+    if not boot or not lease:
+        raise ValueError("invalid ACK session")
+    return boot, node, lease, sequence, data[20:54]
+
+
 def reference_vectors():
     unit = identity("00112233445566778899aabbccddeeff")
     common = dict(node=1, lease=0x11223344)
@@ -103,6 +125,12 @@ def reference_vectors():
         "input": frame(INPUT, unit, 0x10203040, sequence=9,
                        report=bytes.fromhex("053412ffff"), **common),
         "heartbeat": frame(HEARTBEAT, unit, 0x10203040, sequence=10, **common),
+        "input_ack": frame(INPUT_ACK, unit, 0x10203040, sequence=9,
+                           report=bytes.fromhex("053412ffff"), **common),
+        "maximum_announce": frame(ANNOUNCE, unit, 0x10203040, buttons=128, hats=4,
+                                  usages=tuple(range(0x30, 0x38)), neutrals=tuple(i * 9000 for i in range(8))),
+        "maximum_input": frame(INPUT, unit, 0x10203040, sequence=9,
+                               report=bytes(range(1, 17)) + bytes((0x70, 0x88)) + bytes(range(19, 35)), **common),
     }
     return {name: {"id": f"0x{can_id:08x}", "data": data.hex()}
             for name, (can_id, data) in samples.items()}
@@ -126,8 +154,8 @@ def run_peer(args):
     if not all(hasattr(socket, key) for key in required):
         raise ValueError("live mode needs Linux SocketCAN; --vectors works on this host")
     unit = identity(args.identity)
-    if not 0 <= args.buttons <= 64 or not 0 <= args.axes <= 8 or not (args.buttons or args.axes):
-        raise ValueError("choose 0..64 buttons and 0..8 axes, with at least one control")
+    if not 0 <= args.buttons <= 128 or not 0 <= args.hats <= 4 or not 0 <= args.axes <= 8 or not (args.buttons or args.hats or args.axes):
+        raise ValueError("choose 0..128 buttons,0..4 hats,0..8 axes, with at least one control")
     usages = tuple(range(0x30, 0x30 + args.axes))
     axes = tuple(int(value, 0) for value in args.axis_values.split(",")) if args.axis_values else (0,) * args.axes
     if len(axes) != args.axes or any(not 0 <= value <= 65535 for value in axes):
@@ -136,10 +164,17 @@ def run_peer(args):
     if not 0 <= args.buttons_mask < 1 << args.buttons:
         raise ValueError("--buttons-mask contains a button outside the declared profile")
     report = args.buttons_mask.to_bytes((args.buttons + 7) // 8, "little")
+    hats = tuple(int(value, 0) for value in args.hat_values.split(",")) if args.hat_values else (8,) * args.hats
+    if len(hats) != args.hats or any(not 0 <= value <= 8 for value in hats):
+        raise ValueError("--hat-values must contain one direction0..7 or neutral8 per hat")
+    packed_hats = bytearray((args.hats + 1) // 2)
+    for i, value in enumerate(hats):
+        packed_hats[i // 2] |= value << ((i % 2) * 4)
+    report += packed_hats
     report += b"".join(struct.pack("<H", value) for value in axes)
     boot = secrets.randbelow(0xFFFFFFFF) + 1
     announcement = frame(ANNOUNCE, unit, boot, buttons=args.buttons, usages=usages,
-                         neutrals=neutrals, direct=args.direct_usb)
+                         neutrals=neutrals, hats=args.hats, direct=args.direct_usb)
     with socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW) as bus:
         bus.setsockopt(socket.SOL_CAN_RAW, socket.CAN_RAW_FD_FRAMES, 1)
         bus.bind((args.interface,))
@@ -174,6 +209,14 @@ def run_peer(args):
             can_id, length, flags, _, _, padded = FD_FRAME.unpack(packet)
             if can_id & 0x60000000 or not can_id & EFF or not flags & BRS or length > 64:
                 continue
+            if padded[3] == INPUT_ACK:
+                try:
+                    ack_boot, ack_node, ack_lease, ack_sequence, ack_report = decode_ack(can_id & 0x1FFFFFFF, padded[:length])
+                    if args.show_acks and (ack_boot, ack_node, ack_lease) == (boot, node, lease):
+                        print(f"USB delivered sequence={ack_sequence} report={ack_report[:len(report)].hex()}", flush=True)
+                except ValueError:
+                    pass
+                continue
             try:
                 remote, remote_boot, new_node, new_lease, new_epoch = decode_assignment(can_id & 0x1FFFFFFF, padded[:length])
             except ValueError:
@@ -196,6 +239,9 @@ def main():
     parser.add_argument("--identity", default="00112233445566778899aabbccddeeff")
     parser.add_argument("--buttons", type=int, default=3)
     parser.add_argument("--axes", type=int, default=2)
+    parser.add_argument("--hats", type=int, default=0)
+    parser.add_argument("--hat-values", default="", help="comma-separated directions0..7 or neutral8; defaults neutral")
+    parser.add_argument("--show-acks", action="store_true", help="print successful host USB delivery ACKs")
     parser.add_argument("--axis-values", default="", help="comma-separated uint16 inputs; defaults to zero")
     parser.add_argument("--buttons-mask", type=lambda value: int(value, 0), default=0)
     parser.add_argument("--direct-usb", action="store_true", help="claim direct USB ownership; routed reports neutralize")

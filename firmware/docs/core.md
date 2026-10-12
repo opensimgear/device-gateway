@@ -1,6 +1,6 @@
 # Portable gateway core
 
-`gateway.c`, `gateway_protocol.c` and `gateway_registry.c` are allocation-free C11
+`gateway.c`, `gateway_protocol.c`, `gateway_registry.c` and `gateway_cockpit.c` are allocation-free C11
 and have no MCU, RTOS, TinyUSB or host-library dependency. The STM32 board
 adapts CAN FD frames, time, USB, and persistent storage around these interfaces.
 All mutation belongs to a single event loop; callbacks must not mutate the core
@@ -30,7 +30,7 @@ Offline slots remain present and produce their configured neutral values.
 There is one HID interface with a joystick top-level application collection per
 occupied slot. Report ID is slot index plus 1; no slots are renumbered automatically.
 The descriptor uses standard joystick, button and axis usages, with no proprietary
-input fields. The full maximum profile has 25 on-wire bytes including its report ID,
+input fields. The full maximum profile has 35 on-wire bytes including its report ID,
 well below the 64-byte full-speed interrupt packet. Hosts may expose top-level
 collections differently; binding stability needs physical Windows/Linux/macOS
 validation. There is no claim of equivalence to the simulator's multiple HID
@@ -50,7 +50,7 @@ The persistent codec is an exact 500-byte, versioned little-endian record:
 | Offset | Contents |
 | --- | --- |
 | 0–3 | ASCII `OGR1` |
-| 4–5 | format version 1 |
+| 4–5 | format version 2 (version 1 remains readable) |
 | 6 | slot count 10 |
 | 7 | zero |
 | 8–11 | registry generation |
@@ -58,7 +58,7 @@ The persistent codec is an exact 500-byte, versioned little-endian record:
 | 16–495 | ten 48-byte slot records |
 | 496–499 | CRC-32/ISO-HDLC over bytes 0–495 |
 
-Each present slot contains occupied 1, button count, axis count, reserved 0,
+Each present slot contains occupied 1, button count, axis count, hat count,
 identity 16 bytes, revision 2 bytes, usages 8 bytes, neutrals 16 bytes, reserved 2 bytes.
 An empty slot is all zero. Unknown versions, wrong length, nonzero reserved bytes,
 invalid capabilities, duplicate identities, or bad CRC are rejected without
@@ -78,3 +78,27 @@ sequence/time wrap, direct-USB ownership, stop/start rearming, stale node reuse,
 module timeout, bounded allocation, lease exhaustion, stable descriptors, explicit
 profile application, registry generation wrap, corrupt records and every interrupted
 byte position in an inactive write. These are logic tests, not electrical validation.
+
+Report order is buttons, packed four-bit hats, then unsigned little-endian axes.
+A neutral used hat has nibble 8; an unused high nibble is zero. The maximum
+profile is 128 buttons, four hats and eight axes, producing 34 payload bytes.
+The v2 codec routes compact INPUT/INPUT_ACK by node, boot and lease; full UUIDs
+remain in ANNOUNCE/ASSIGN/HEARTBEAT. The registry writes hat count in slot byte 3;
+legacy version 1 records require that byte zero and retain their 64-button bound.
+
+`osg_gateway_delivery_prepare()` captures an eligible active input’s exact
+sequence/report and run/module generations at USB submission.
+`osg_gateway_delivery_complete()` validates the callback’s report ID, length and
+bytes, plus the still-current route and generations, before encoding an ACK.
+New input cannot overwrite the captured sequence, and a heartbeat’s sequence is
+not confused with the last input sequence. USB/run, ownership, stale input,
+lease/session and active profile changes discard old completions. Neutral
+fallbacks never qualify; legitimate neutral input does. The STM32 calls this
+only from TinyUSB’s successful interrupt report callback.
+
+`gateway_cockpit.c` parses bounded machine requests and formats correlated JSON
+snapshots. Mutation epochs must match before staging or flash callbacks run.
+Apply only schedules USB activation after persistence succeeds. The fixed writer
+returns an empty string on overflow, and tests parse fresh maximum snapshots
+independently as JSON. Full device calibration/settings/update commands remain
+outside this inventory/registry contract.

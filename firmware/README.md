@@ -9,8 +9,9 @@ jacks does not change its identity or controller slot.
 The firmware builds a real STM32 ELF, binary and Intel HEX. It has active CAN FD,
 USB HID plus CDC, discovery, bounded chain-local node allocation, an identity-based
 registry, persistent storage and explicit USB layout application. It uses the
-private [CAN FD bring-up protocol](docs/can-fd-bringup-v1.md); current module
-firmware and the cockpit simulator do not implement this transport or console.
+[CAN FD v2 prototype contract](docs/can-fd-v2.md), shared with the generic
+module firmware and Cockpit’s native STM32 adapter. The Pico simulator remains
+a separate transport and does not implement this console.
 Electrical operation and host/game treatment of multiple HID collections still
 require assembled-board validation.
 
@@ -44,9 +45,9 @@ unallocated `0xFFFF:0xFFFF` identifiers used solely by CI compile checks.
 
 The build pins firmware-common to commit
 `35e06787fb9696977fe92d20c5ff5afc1e3e1ebf`, whose pins select TinyUSB, ST HAL,
-CMSIS, libcanard and the canonical protocol source. The current bring-up protocol
-is implemented in this gateway; libcanard and the canonical protocol are pinned
-for later integration and are not linked into its wire path. Dependency clones
+CMSIS, libcanard and the canonical protocol source. The CAN FD v2 codec
+is implemented in this gateway and snapshotted into the protocol repository;
+libcanard is pinned for later Cyphal integration and is not linked into its wire path. Dependency clones
 are stored under the workspace `.research/gateway-deps` directory. See
 [dependency configuration](cmake/README.md) for local source overrides.
 
@@ -54,13 +55,14 @@ are stored under the workspace `.research/gateway-deps` directory. See
 
 The MCU's 96-bit factory UID is the stable 24-hex-character gateway identity and
 USB serial number. The CDC `identity` response includes the discriminator
-`gatewayType=stm32-can-bringup protocol=1`. Module identities are separate
+`gatewayType=stm32-can-gateway protocol=2 canProtocol=2 firmware=0.2.0`. Module identities are separate
 16-byte values printed as 32 hexadecimal digits.
 
 There are ten permanent registry slots, each retaining its module identity and
 profile. One HID interface contains a standard joystick top-level application
 collection per occupied slot; report ID is slot index plus one. Reports contain
-up to 64 buttons and eight unsigned 16-bit axes. An empty registry has a vendor
+up to 128 buttons, four packed four-bit hats and eight unsigned 16-bit axes.
+Reports pack buttons first, then hats (8 means neutral), then little-endian axes. An empty registry has a vendor
 management collection, report ID 11, and no joystick. HID descriptors change
 only on explicit `apply` or reboot after `save`; discovery and temporary loss
 do not re-enumerate USB. Registered modules that are absent, stale, directly USB
@@ -103,7 +105,44 @@ A registered module may be directly USB owned; its gateway report stays neutral
 until ownership is released and fresh input arrives. Registration requires an
 online discovery so the stored profile describes the actual module.
 
+## Cockpit machine console
+
+Cockpit uses correlated, bounded requests alongside the human console:
+
+```text
+cockpit 1 snapshot
+cockpit 2 65536 register 00112233445566778899aabbccddeeff
+cockpit 3 65536 apply
+```
+
+Use the epoch returned by the current snapshot rather than the example value.
+All mutations (`register`, `unregister`, `save`, `apply`) require that epoch;
+a stale epoch returns `stale_epoch` without modifying state. Every response is
+one JSON line with `{id,ok,error,state}`. The state contains gateway identity,
+versions, running/layout state and all discovered or retained registered devices.
+Each device includes its node/lease, complete observed profile, pending/active
+slots, `profileMatch`, `pendingProfileMatch`, input freshness and a report whose
+length matches that observed profile. Missing, stale, directly USB owned,
+unregistered or mismatched devices return neutral values under the observed
+profile. `apply` acknowledges persistence before USB disconnects; the host must
+reconnect to the same gateway UID and query the resulting state.
+
+The receiver preserves a host’s first command when DTR opens so that a write
+arriving with the control-line change is not discarded. Input is flushed on
+close. Requests remain at most 79 characters, and JSON responses fit the fixed
+8 KiB writer; overflow fails without emitting partial JSON. The legacy console
+commands remain available. This contract covers inventory and gateway controller
+registration, not remote calibration, mapping, settings or firmware updates.
+
 ## CAN service and persistence
+
+An INPUT_ACK is sent only after successful USB interrupt completion. It echoes
+the immutable input sequence and exact delivered report, even if a newer CAN
+input arrived while USB was busy. USB/run, route, lease, boot session, ownership
+and freshness changes invalidate outstanding acknowledgments. Neutral fallback
+reports, failed USB transfers and control `GET_REPORT` reads do not acknowledge
+encoder pulses. A correctly routed module therefore advances pulses only when
+the host has actually received them.
 
 Normal CAN FD uses 500 kbit/s arbitration, 2 Mbit/s data and bit-rate switching.
 The hardware filter accepts the private protocol prefix; software validates full
@@ -117,7 +156,9 @@ neutralize after 250 ms without fresh input; nodes go offline after 1500 ms.
 
 The application owns only the first 124 KiB of flash. Pages at `0x0801F000` and
 `0x0801F800` form a two-page journal. Each record contains a sequence, CRC,
-boot lease-block base and the portable 500-byte registry. The inactive page is
+boot lease-block base and the portable 500-byte registry. New writes use format version 2 with a hat
+count; version 1 records remain readable with zero hats and upgrade on the next
+successful save. The inactive page is
 erased, programmed and read back before its commit doubleword is programmed
 last. Page indexes account for the actual MCU bank configuration. Power failure
 before commit retains the previous complete record.

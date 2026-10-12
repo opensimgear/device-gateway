@@ -23,7 +23,7 @@ size_t osg_gateway_registry_encode(const osg_gateway_registry_t *r,uint8_t *out,
     write32(record+8,r->generation); write32(record+12,OSG_GW_REGISTRY_RECORD_SIZE);
     for(unsigned i=0;i<10;i++) if(r->slots[i].occupied) {
         const osg_gateway_slot_t *s=&r->slots[i]; uint8_t *p=record+16+48*i;
-        p[0]=1; p[1]=s->profile.button_count; p[2]=s->profile.axis_count;
+        p[0]=1; p[1]=s->profile.button_count; p[2]=s->profile.axis_count; p[3]=s->profile.hat_count;
         memcpy(p+4,s->identity.bytes,16); write16(p+20,s->profile.revision);
         memcpy(p+22,s->profile.axis_usage,8);
         for(unsigned a=0;a<8;a++) write16(p+30+2*a,s->profile.axis_neutral[a]);
@@ -33,15 +33,16 @@ size_t osg_gateway_registry_encode(const osg_gateway_registry_t *r,uint8_t *out,
 }
 bool osg_gateway_registry_decode(const uint8_t *record,size_t length,osg_gateway_registry_t *out) {
     if(!record || !out || length!=OSG_GW_REGISTRY_RECORD_SIZE || memcmp(record,"OGR1",4) ||
-       read16(record+4)!=OSG_GW_REGISTRY_VERSION || record[6]!=10 || record[7] ||
+       (read16(record+4)!=1 && read16(record+4)!=OSG_GW_REGISTRY_VERSION) || record[6]!=10 || record[7] ||
        read32(record+12)!=OSG_GW_REGISTRY_RECORD_SIZE ||
        read32(record+496)!=osg_gateway_crc32(record,496)) return false;
     osg_gateway_registry_t r={.generation=read32(record+8)};
     for(unsigned i=0;i<10;i++) {
         const uint8_t *p=record+16+48*i; osg_gateway_slot_t *s=&r.slots[i];
         if(!p[0]) { if(!zero(p,48)) return false; continue; }
-        if(p[0]!=1 || p[3] || p[46] || p[47]) return false;
+        if(p[0]!=1 || (read16(record+4)==1 && (p[3] || p[1]>64)) || p[46] || p[47]) return false;
         s->occupied=true; s->profile.button_count=p[1]; s->profile.axis_count=p[2];
+        s->profile.hat_count=p[3];
         memcpy(s->identity.bytes,p+4,16); s->profile.revision=read16(p+20);
         memcpy(s->profile.axis_usage,p+22,8);
         for(unsigned a=0;a<8;a++) s->profile.axis_neutral[a]=read16(p+30+2*a);

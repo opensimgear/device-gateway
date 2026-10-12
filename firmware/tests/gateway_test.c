@@ -1,4 +1,5 @@
 #include "opensimgear/gateway.h"
+#include "opensimgear/gateway_cockpit.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -26,7 +27,7 @@ static osg_gateway_message_t discover(osg_gateway_t *g,unsigned id,uint32_t now)
 }
 static osg_gateway_message_t input(osg_gateway_message_t assignment,uint32_t seq) {
     assignment.type=OSG_GW_INPUT; assignment.gateway_epoch=0; assignment.sequence=seq;
-    memset(assignment.report,0,24); assignment.report[0]=5;
+    memset(assignment.report,0,sizeof assignment.report); assignment.report[0]=5;
     assignment.report[1]=0x34; assignment.report[2]=0x12;
     assignment.report[3]=0xff; assignment.report[4]=0xff; return assignment;
 }
@@ -63,7 +64,19 @@ static void protocol_test(void) {
     bad=frame; bad.brs=false; assert(!osg_gateway_frame_decode(&bad,&decoded));
     msg.profile.axis_usage[1]=0x30; assert(!osg_gateway_frame_encode(&msg,&frame));
     msg.profile=profile(); msg.profile.axis_neutral[7]=1; assert(!osg_gateway_frame_encode(&msg,&frame));
-    msg.profile=profile(); msg.profile.button_count=65; assert(!osg_gateway_frame_encode(&msg,&frame));
+    msg.profile=profile(); msg.profile.button_count=129; assert(!osg_gateway_frame_encode(&msg,&frame));
+    msg.profile=profile(); msg.profile.hat_count=5; assert(!osg_gateway_frame_encode(&msg,&frame));
+    msg=(osg_gateway_message_t){.type=OSG_GW_INPUT_ACK,.node=1,.boot_session=1,.lease=1};
+    assert(osg_gateway_frame_encode(&msg,&frame) && osg_gateway_frame_decode(&frame,&decoded));
+    const unsigned reserved[]={54,59,6};
+    for(unsigned i=0;i<sizeof reserved/sizeof reserved[0];i++) {
+        bad=frame; bad.data[reserved[i]]=1; uint32_t crc=osg_gateway_crc32(bad.data,60);
+        for(unsigned j=0;j<4;j++) bad.data[60+j]=(uint8_t)(crc>>(8*j));
+        assert(!osg_gateway_frame_decode(&bad,&decoded)); /* valid CRC, invalid padding */
+    }
+    bad=frame; bad.data[2]=1; uint32_t crc=osg_gateway_crc32(bad.data,60);
+    for(unsigned j=0;j<4;j++) bad.data[60+j]=(uint8_t)(crc>>(8*j));
+    assert(!osg_gateway_frame_decode(&bad,&decoded)); /* old wire version */
 }
 static void lifecycle_test(void) {
     osg_gateway_t g; assert(osg_gateway_init(&g,0x10000,NULL));
@@ -91,7 +104,6 @@ static void lifecycle_test(void) {
     stale=in; stale.boot_session++; stale.sequence=8;
     assert(receive(&g,&stale,259,NULL)==OSG_GW_RX_REJECTED);
     stale=in; stale.node=2; stale.sequence=8; assert(receive(&g,&stale,259,NULL)==OSG_GW_RX_REJECTED);
-    stale=in; stale.identity=identity(2); stale.sequence=8; assert(receive(&g,&stale,259,NULL)==OSG_GW_RX_REJECTED);
     stale=in; stale.report[0]=0x80; stale.sequence=8; assert(receive(&g,&stale,259,NULL)==OSG_GW_RX_REJECTED);
     stale=in; stale.report[23]=1; stale.sequence=8; assert(receive(&g,&stale,259,NULL)==OSG_GW_RX_REJECTED);
     osg_gateway_tick(&g,1758); assert(!g.modules[0].online); check_report(&g,0,false);
@@ -138,6 +150,19 @@ static void registry_test(void) {
     assert(osg_gateway_registry_encode(&r,record,sizeof record)==500);
     assert(osg_gateway_registry_decode(record,sizeof record,&decoded));
     assert(decoded.slots[2].occupied && !decoded.slots[0].occupied);
+    /* Preserve the exact 500-byte v1 record, then write the upgraded format. */
+    uint8_t legacy[500]; memcpy(legacy,record,sizeof legacy); legacy[4]=1;
+    uint32_t crc=osg_gateway_crc32(legacy,496);
+    for(unsigned i=0;i<4;i++) legacy[496+i]=(uint8_t)(crc>>(8*i));
+    assert(osg_gateway_registry_decode(legacy,sizeof legacy,&decoded) && !decoded.slots[2].profile.hat_count);
+    assert(osg_gateway_registry_encode(&decoded,legacy,sizeof legacy)==500 && legacy[4]==2);
+    r.slots[2].profile.hat_count=3;
+    assert(osg_gateway_registry_encode(&r,legacy,sizeof legacy)==500);
+    assert(osg_gateway_registry_decode(legacy,sizeof legacy,&decoded) && decoded.slots[2].profile.hat_count==3);
+    legacy[4]=1; crc=osg_gateway_crc32(legacy,496);
+    for(unsigned i=0;i<4;i++) legacy[496+i]=(uint8_t)(crc>>(8*i));
+    assert(!osg_gateway_registry_decode(legacy,sizeof legacy,&decoded));
+    r.slots[2].profile.hat_count=0;
     r.generation=0; assert(osg_gateway_registry_encode(&r,next,sizeof next)==500);
     assert(osg_gateway_registry_select(record,500,next,500,&decoded)==1 && decoded.generation==0);
     for(unsigned i=0;i<500;i++) {
@@ -186,43 +211,172 @@ static void descriptor_test(void) {
     osg_gateway_apply_layout(&g); assert(osg_gateway_descriptor(&g,after,sizeof after)==n);
     assert(memcmp(before,after,n));
 }
+static osg_gateway_profile_t maximum_profile(void) {
+    osg_gateway_profile_t p={.button_count=128,.hat_count=4,.axis_count=8,.revision=1};
+    for(unsigned a=0;a<8;a++) { p.axis_usage[a]=(uint8_t)(0x30+a); p.axis_neutral[a]=(uint16_t)(a*9000); }
+    return p;
+}
 static void maximum_profile_test(void) {
     osg_gateway_registry_t r={0};
-    for(unsigned i=0;i<10;i++) {
-        osg_gateway_profile_t p={.button_count=64,.axis_count=8,.revision=1};
-        for(unsigned a=0;a<8;a++) { p.axis_usage[a]=(uint8_t)(0x30+a); p.axis_neutral[a]=(uint16_t)(a*9000); }
-        r.slots[i]=(osg_gateway_slot_t){.occupied=true,.identity=identity(i+1),.profile=p};
-    }
+    for(unsigned i=0;i<10;i++) r.slots[i]=(osg_gateway_slot_t){.occupied=true,.identity=identity(i+1),.profile=maximum_profile()};
     osg_gateway_t g; assert(osg_gateway_init(&g,0x60000,&r));
-    uint8_t descriptor[1024],report[24];
-    size_t length=osg_gateway_descriptor(&g,descriptor,sizeof descriptor); assert(length && length<=1024);
+    uint8_t descriptor[OSG_GW_DESCRIPTOR_CAPACITY],report[OSG_GW_MAX_REPORT_SIZE];
+    size_t length=osg_gateway_descriptor(&g,descriptor,sizeof descriptor); assert(length && length<=sizeof descriptor);
+    unsigned bit_count[11]={0},item_size=0,item_count=0,report_id=0;
+    for(size_t i=0;i<length;) {
+        uint8_t item=descriptor[i++]; unsigned bytes=item&3; if(bytes==3) bytes=4;
+        assert(item!=0xfe && i+bytes<=length); uint32_t value=0;
+        for(unsigned j=0;j<bytes;j++) value|=(uint32_t)descriptor[i+j]<<(8*j);
+        if(item==0x85) { report_id=value; assert(report_id>=1 && report_id<=10); }
+        if(item==0x75) item_size=value;
+        if(item==0x95) item_count=value;
+        if((item&0xfc)==0x80) bit_count[report_id]+=item_size*item_count;
+        i+=bytes;
+    }
+    for(unsigned i=1;i<=10;i++) assert(bit_count[i]==34*8);
     osg_gateway_message_t msg=announce(1); msg.profile=r.slots[0].profile;
     osg_gateway_frame_t assignment; assert(receive(&g,&msg,0,&assignment)==OSG_GW_RX_ASSIGNMENT);
     assert(osg_gateway_frame_decode(&assignment,&msg));
     msg.type=OSG_GW_INPUT; msg.sequence=1;
-    for(unsigned i=0;i<24;i++) msg.report[i]=(uint8_t)(i+1);
+    for(unsigned i=0;i<sizeof msg.report;i++) msg.report[i]=(uint8_t)(i+1);
+    msg.report[16]=0x70; msg.report[17]=0x88;
     osg_gateway_set_running(&g,true); assert(receive(&g,&msg,1,NULL)==OSG_GW_RX_ACCEPTED);
-    assert(osg_gateway_report(&g,0,report,sizeof report)==24 && !memcmp(report,msg.report,24));
-    assert(!osg_gateway_report(&g,0,report,23));
-    osg_gateway_tick(&g,251); assert(osg_gateway_report(&g,0,report,sizeof report)==24);
-    for(unsigned i=0;i<8;i++) assert(report[i]==0);
+    assert(osg_gateway_report(&g,0,report,sizeof report)==34 && !memcmp(report,msg.report,34));
+    assert(!osg_gateway_report(&g,0,report,33));
+    osg_gateway_tick(&g,251); assert(osg_gateway_report(&g,0,report,sizeof report)==34);
+    for(unsigned i=0;i<16;i++) assert(report[i]==0);
+    assert(report[16]==0x88 && report[17]==0x88);
     for(unsigned i=0;i<8;i++) {
-        uint16_t actual=(uint16_t)(report[8+2*i]|((uint16_t)report[9+2*i]<<8));
+        uint16_t actual=(uint16_t)(report[18+2*i]|((uint16_t)report[19+2*i]<<8));
         assert(actual==r.slots[0].profile.axis_neutral[i]);
     }
+    /* Invalid hat directions, button padding and unused hat nibbles are rejected. */
+    msg.sequence=2; msg.report[16]=0x90;
+    assert(receive(&g,&msg,252,NULL)==OSG_GW_RX_REJECTED);
+    osg_gateway_profile_t odd={.button_count=3,.hat_count=3,.revision=1};
+    uint8_t odd_report[34]; osg_gateway_profile_neutral(&odd,odd_report);
+    assert(odd_report[1]==0x88 && odd_report[2]==8 && osg_gateway_profile_report_valid(&odd,odd_report));
+    odd_report[2]|=0x80; assert(!osg_gateway_profile_report_valid(&odd,odd_report));
+    odd_report[2]=8; odd_report[0]=0x80; assert(!osg_gateway_profile_report_valid(&odd,odd_report));
     /* Registered profile stays authoritative until explicit apply. */
     msg=announce(1); msg.profile=r.slots[0].profile; msg.profile.revision=2;
-    assert(receive(&g,&msg,252,&assignment)==OSG_GW_RX_ASSIGNMENT);
+    assert(receive(&g,&msg,253,&assignment)==OSG_GW_RX_ASSIGNMENT);
     assert(osg_gateway_frame_decode(&assignment,&msg)); msg.type=OSG_GW_INPUT; msg.sequence=1;
-    memset(msg.report,0xff,sizeof msg.report);
-    assert(receive(&g,&msg,253,NULL)==OSG_GW_RX_ACCEPTED);
-    assert(osg_gateway_report(&g,0,report,sizeof report)==24 && report[0]==0);
-    assert(osg_gateway_register(&g,&msg.identity)); osg_gateway_apply_layout(&g); osg_gateway_set_running(&g,true);
-    msg.sequence=2; assert(receive(&g,&msg,254,NULL)==OSG_GW_RX_ACCEPTED);
-    assert(osg_gateway_report(&g,0,report,sizeof report)==24 && report[0]==0xff);
+    memset(msg.report,0xff,sizeof msg.report); msg.report[16]=0x70; msg.report[17]=0x88;
+    assert(receive(&g,&msg,254,NULL)==OSG_GW_RX_ACCEPTED);
+    assert(osg_gateway_report(&g,0,report,sizeof report)==34 && report[0]==0);
+    osg_gateway_identity_t id=identity(1);
+    assert(osg_gateway_register(&g,&id)); osg_gateway_apply_layout(&g); osg_gateway_set_running(&g,true);
+    msg.sequence=2; assert(receive(&g,&msg,255,NULL)==OSG_GW_RX_ACCEPTED);
+    assert(osg_gateway_report(&g,0,report,sizeof report)==34 && report[0]==0xff);
+}
+static void delivery_test(void) {
+    osg_gateway_t g; assert(osg_gateway_init(&g,0x10000,NULL));
+    osg_gateway_message_t assignment=discover(&g,1,0),in=input(assignment,1);
+    osg_gateway_identity_t id=identity(1); assert(osg_gateway_register(&g,&id));
+    osg_gateway_apply_layout(&g); osg_gateway_set_running(&g,true);
+    uint8_t wire[OSG_GW_MAX_REPORT_SIZE+1]={1}; osg_gateway_delivery_t d;
+    osg_gateway_frame_t ack; osg_gateway_message_t decoded;
+    assert(osg_gateway_delivery_prepare(&g,0,wire+1,sizeof wire-1,&d)==5 && !d.valid);
+    assert(!osg_gateway_delivery_complete(&g,&d,wire,6,&ack)); /* neutral fallback */
+    assert(receive(&g,&in,1,NULL)==OSG_GW_RX_ACCEPTED);
+    g.modules[1]=g.modules[0]; g.modules[1].identity=identity(2);
+    osg_gateway_message_t ambiguous=in; ambiguous.sequence=2;
+    assert(receive(&g,&ambiguous,1,NULL)==OSG_GW_RX_REJECTED);
+    memset(&g.modules[1],0,sizeof g.modules[1]);
+    assert(osg_gateway_delivery_prepare(&g,0,wire+1,sizeof wire-1,&d)==5 && d.valid);
+    assert(!osg_gateway_delivery_complete(&g,&d,wire,5,&ack));
+    wire[0]=2; assert(!osg_gateway_delivery_complete(&g,&d,wire,6,&ack)); wire[0]=1;
+    wire[1]^=1; assert(!osg_gateway_delivery_complete(&g,&d,wire,6,&ack)); wire[1]^=1;
+    /* A newer CAN input or heartbeat must not rewrite the in-flight USB snapshot. */
+    in.sequence=2; in.report[0]=3; assert(receive(&g,&in,2,NULL)==OSG_GW_RX_ACCEPTED);
+    osg_gateway_message_t hb=assignment; hb.type=OSG_GW_HEARTBEAT; hb.sequence=3;
+    assert(receive(&g,&hb,3,NULL)==OSG_GW_RX_ACCEPTED);
+    assert(osg_gateway_delivery_complete(&g,&d,wire,6,&ack));
+    assert(osg_gateway_frame_decode(&ack,&decoded));
+    assert(decoded.type==OSG_GW_INPUT_ACK && decoded.sequence==1 && decoded.report[0]==5);
+    assert(!osg_gateway_identity_valid(&decoded.identity)); /* compact route */
+    assert(osg_gateway_receive(&g,&ack,4,NULL)==OSG_GW_RX_REJECTED);
+    osg_gateway_set_running(&g,false); osg_gateway_set_running(&g,true);
+    in.sequence=4; assert(receive(&g,&in,5,NULL)==OSG_GW_RX_ACCEPTED);
+    assert(!osg_gateway_delivery_complete(&g,&d,wire,6,&ack)); /* USB/run generation */
+    assert(osg_gateway_delivery_prepare(&g,0,wire+1,sizeof wire-1,&d)==5 && d.valid);
+    hb.sequence=5; hb.direct_usb=true; assert(receive(&g,&hb,6,NULL)==OSG_GW_RX_ACCEPTED);
+    hb.sequence=6; hb.direct_usb=false; assert(receive(&g,&hb,7,NULL)==OSG_GW_RX_ACCEPTED);
+    in.sequence=7; assert(receive(&g,&in,8,NULL)==OSG_GW_RX_ACCEPTED);
+    assert(!osg_gateway_delivery_complete(&g,&d,wire,6,&ack)); /* ownership changed and returned */
+    assert(osg_gateway_delivery_prepare(&g,0,wire+1,sizeof wire-1,&d)==5 && d.valid);
+    osg_gateway_tick(&g,258); in.sequence=8; assert(receive(&g,&in,259,NULL)==OSG_GW_RX_ACCEPTED);
+    assert(!osg_gateway_delivery_complete(&g,&d,wire,6,&ack)); /* freshness generation */
+    assert(osg_gateway_delivery_prepare(&g,0,wire+1,sizeof wire-1,&d)==5 && d.valid);
+    osg_gateway_message_t reboot=announce(1); reboot.boot_session++;
+    osg_gateway_frame_t reply; assert(receive(&g,&reboot,260,&reply)==OSG_GW_RX_ASSIGNMENT);
+    assert(!osg_gateway_delivery_complete(&g,&d,wire,6,&ack)); /* session and lease changed */
+    osg_gateway_bus_reset(&g); assert(!osg_gateway_delivery_complete(&g,&d,wire,6,&ack));
+}
+static bool persist(void *context) { unsigned *calls=context; (*calls)++; return *calls>1; }
+static void cockpit_test(void) {
+    osg_gateway_cockpit_request_t r;
+    assert(osg_gateway_cockpit_parse("cockpit 4294967295 snapshot",&r) && r.id==UINT32_MAX);
+    const char *invalid[]={"cockpit 4294967296 snapshot","cockpit -1 snapshot","cockpit 1 snapshot ",
+        "cockpit 1 0 save","cockpit 1 save","cockpit 1 1 apply x","cockpit 1 1 register bad"};
+    for(unsigned i=0;i<sizeof invalid/sizeof invalid[0];i++) assert(!osg_gateway_cockpit_parse(invalid[i],&r));
+    osg_gateway_t g; assert(osg_gateway_init(&g,0x10000,NULL)); discover(&g,1,0);
+    char id[33],line[80]; osg_gateway_identity_t module=identity(1); osg_gateway_identity_format(&module,id);
+    snprintf(line,sizeof line,"cockpit 2 1 register %s",id); assert(osg_gateway_cockpit_parse(line,&r));
+    bool apply=true; unsigned calls=0;
+    assert(!strcmp(osg_gateway_cockpit_execute(&g,&r,persist,&calls,&apply),"stale_epoch") && !apply && !calls);
+    assert(!g.pending.slots[0].occupied);
+    snprintf(line,sizeof line,"cockpit 2 65536 register %s",id); assert(osg_gateway_cockpit_parse(line,&r));
+    assert(!osg_gateway_cockpit_execute(&g,&r,persist,&calls,&apply) && !apply);
+    assert(osg_gateway_cockpit_parse("cockpit 3 65536 apply",&r));
+    assert(!strcmp(osg_gateway_cockpit_execute(&g,&r,persist,&calls,&apply),"flash_save_failed") && !apply && calls==1);
+    assert(!osg_gateway_cockpit_execute(&g,&r,persist,&calls,&apply) && apply && calls==2);
+    assert(!g.active.slots[0].occupied); /* caller must physically detach before applying */
+    char output[OSG_GW_COCKPIT_RESPONSE_CAPACITY];
+    assert(osg_gateway_cockpit_response(&g,"0123456789abcdef01234567",3,"stale_epoch",output,sizeof output));
+    assert(strstr(output,"\"id\":3,\"ok\":false") && strstr(output,"\"needsApply\":true"));
+    assert(!osg_gateway_cockpit_response(&g,"0123456789abcdef01234567",3,NULL,output,10) && !output[0]);
+}
+static void snapshot(void) {
+    osg_gateway_registry_t r={0};
+    for(unsigned i=0;i<10;i++) r.slots[i]=(osg_gateway_slot_t){.occupied=true,.identity=identity(i+1),.profile=maximum_profile()};
+    osg_gateway_t g; assert(osg_gateway_init(&g,0x10000,&r));
+    char output[OSG_GW_COCKPIT_RESPONSE_CAPACITY];
+    assert(osg_gateway_cockpit_response(&g,"0123456789abcdef01234567",123,NULL,output,sizeof output));
+    fputs(output,stdout);
+}
+static void cockpit_case(const char *name,const osg_gateway_t *g,uint32_t id,const char *error,bool last) {
+    char output[OSG_GW_COCKPIT_RESPONSE_CAPACITY];
+    assert(osg_gateway_cockpit_response(g,"0123456789abcdef01234567",id,error,output,sizeof output));
+    printf("  \"%s\": %s%s\n",name,output,last?"":",");
+}
+static void cockpit_vectors(void) {
+    osg_gateway_t g; assert(osg_gateway_init(&g,0x10000,NULL));
+    osg_gateway_message_t msg=announce(1); msg.profile=maximum_profile(); osg_gateway_frame_t reply;
+    assert(receive(&g,&msg,0,&reply)==OSG_GW_RX_ASSIGNMENT);
+    puts("{"); cockpit_case("discovered_unregistered",&g,1,NULL,false);
+    osg_gateway_identity_t id=identity(1); assert(osg_gateway_register(&g,&id));
+    cockpit_case("pending_profile",&g,2,NULL,false);
+    osg_gateway_apply_layout(&g); osg_gateway_set_running(&g,true);
+    assert(osg_gateway_frame_decode(&reply,&msg)); msg.type=OSG_GW_INPUT; msg.sequence=1;
+    for(unsigned i=0;i<sizeof msg.report;i++) msg.report[i]=(uint8_t)(i+1);
+    msg.report[16]=0x70; msg.report[17]=0x88;
+    assert(receive(&g,&msg,1,NULL)==OSG_GW_RX_ACCEPTED);
+    cockpit_case("active_report",&g,3,NULL,false);
+    msg.type=OSG_GW_HEARTBEAT; msg.identity=id; msg.sequence=2; msg.direct_usb=true;
+    assert(receive(&g,&msg,2,NULL)==OSG_GW_RX_ACCEPTED);
+    cockpit_case("direct_usb",&g,4,NULL,false);
+    osg_gateway_tick(&g,1502); cockpit_case("offline",&g,5,NULL,false);
+    cockpit_case("stale_epoch",&g,6,"stale_epoch",false);
+    msg=announce(1); msg.profile.hat_count=3; msg.profile.revision=2;
+    assert(receive(&g,&msg,1503,&reply)==OSG_GW_RX_ASSIGNMENT);
+    cockpit_case("profile_changed",&g,7,NULL,false);
+    assert(osg_gateway_register(&g,&id)); cockpit_case("profile_updated_pending",&g,8,NULL,true);
+    puts("}");
 }
 static void vectors(void) {
-    osg_gateway_message_t messages[4]={0};
+    osg_gateway_message_t messages[7]={0};
     messages[0]=announce(1);
     assert(osg_gateway_identity_parse("00112233445566778899aabbccddeeff",&messages[0].identity));
     messages[0].boot_session=0x10203040;
@@ -230,17 +384,24 @@ static void vectors(void) {
         .boot_session=messages[0].boot_session,.lease=0x11223344,.gateway_epoch=0x55667788};
     messages[2]=input(messages[1],9); messages[3]=messages[1];
     messages[3].type=OSG_GW_HEARTBEAT; messages[3].gateway_epoch=0; messages[3].sequence=10;
-    const char *names[]={"announce","assign","input","heartbeat"}; puts("{");
-    for(unsigned i=0;i<4;i++) {
+    messages[4]=messages[2]; messages[4].type=OSG_GW_INPUT_ACK;
+    messages[5]=messages[0]; messages[5].profile=maximum_profile();
+    messages[6]=messages[2];
+    for(unsigned i=0;i<sizeof messages[6].report;i++) messages[6].report[i]=(uint8_t)(i+1);
+    messages[6].report[16]=0x70; messages[6].report[17]=0x88;
+    const char *names[]={"announce","assign","input","heartbeat","input_ack","maximum_announce","maximum_input"}; puts("{");
+    for(unsigned i=0;i<7;i++) {
         osg_gateway_frame_t frame; assert(osg_gateway_frame_encode(&messages[i],&frame));
         printf("  \"%s\": {\"id\": \"%08x\", \"length\": %u, \"data\": \"",names[i],(unsigned)frame.id,frame.length);
         for(unsigned j=0;j<frame.length;j++) printf("%02x",frame.data[j]);
-        printf("\"}%s\n",i==3?"":",");
+        printf("\"}%s\n",i==6?"":",");
     }
     puts("}");
 }
 int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--vectors")) { vectors(); return 0; }
-    protocol_test(); lifecycle_test(); bounds_and_wrap_test(); registry_test(); descriptor_test(); maximum_profile_test();
+    if(argc==2 && !strcmp(argv[1],"--snapshot")) { snapshot(); return 0; }
+    if(argc==2 && !strcmp(argv[1],"--cockpit-vectors")) { cockpit_vectors(); return 0; }
+    protocol_test(); lifecycle_test(); bounds_and_wrap_test(); registry_test(); descriptor_test(); maximum_profile_test(); delivery_test(); cockpit_test();
     puts("gateway core: all tests passed"); return 0;
 }

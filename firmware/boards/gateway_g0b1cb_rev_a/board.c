@@ -153,6 +153,9 @@ void board_can_task(uint32_t now) {
     if(recovering) {
         if((int32_t)(now-recovery_at)>=0) {
             (void)HAL_FDCAN_DeInit(&can);
+            /* The default HAL MSP deinit does not reset the peripheral.
+             * Clear hardware TX/RX state as well as the software queue. */
+            __HAL_RCC_FDCAN_FORCE_RESET(); __HAL_RCC_FDCAN_RELEASE_RESET();
             if(can_start()) { recovering=false; diagnostics.recoveries++; }
             else recovery_at=now+CAN_RECOVERY_MS;
         }

@@ -1,7 +1,7 @@
 #ifndef OSG_GATEWAY_REGISTRY_H
 #define OSG_GATEWAY_REGISTRY_H
 #include "opensimgear/gateway_protocol.h"
-enum { OSG_GW_REGISTRY_VERSION=1, OSG_GW_REGISTRY_RECORD_SIZE=500 };
+enum { OSG_GW_REGISTRY_VERSION=2, OSG_GW_REGISTRY_RECORD_SIZE=500 };
 typedef struct {
     bool occupied;
     osg_gateway_identity_t identity;
