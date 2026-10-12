@@ -19,6 +19,8 @@ See [shared transport](../shared-cyphal/README.md) for pins, generation and limi
 | 2002 | `opensimgear.input.Input.1.0` | Device publishes route/session/lease, application sequence and exact packed HID report |
 | 2003 | `opensimgear.input.Status.1.0` | Device publishes identity-bound ownership/presence state |
 | 2004 | `opensimgear.input.InputAck.1.0` | Gateway publishes the sequence/report actually completed by USB HID |
+| 2005 | `opensimgear.input.ConfigRequest.1.0` | Gateway publishes a route-bound command fragment |
+| 2006 | `opensimgear.input.ConfigResponse.1.0` | Module publishes a correlated configuration response fragment |
 | 7509 | `uavcan.node.Heartbeat.1.0` | Each node publishes standard health/mode/uptime every second |
 
 Standard `uavcan.node.GetInfo.1.0` service 430 returns protocol version 1.1,
@@ -36,12 +38,26 @@ the application lease; colliding UIDs invalidate the previous route until the
 transport resolves their addresses. Old leases and USB snapshots cannot carry
 input across that boundary. This is stale-traffic protection, not authentication.
 
-All five application types fit a single CAN FD frame at maximum profile size.
+All seven application types fit a single CAN FD frame at maximum profile size.
 libcanard constructs the identifier, pads before the tail byte, assigns transfer
 IDs, suppresses duplicate transfers and reassembles Classic CAN or multi-frame
 service transfers with the Cyphal transfer CRC. No private magic prefix or
 application frame CRC is added. Standard Cyphal tools can inspect the traffic
 using the canonical DSDL.
+
+Configuration fragments carry 24 payload bytes and serialize to 62 bytes before
+the Cyphal tail. Identity, boot, source, logical node, lease, epoch and request
+ID are checked on both endpoints. Bounded assemblies reject partial/reordered
+commands, and the module caches its last completed command/reply so a retry
+does not repeat flash writes. Unexpected route loss invalidates the writer;
+the lease renewal caused by an authorized Apply preserves that writer. Module
+settings generations are separate from the HID profile revision. Calibration
+endpoints, inversion, deadzone and names do not change the gateway descriptor.
+Axis neutral values belong to the registered profile and require gateway Apply,
+even though the descriptor bytes stay the same.
+The announcement's configuration generation renews the CAN lease on every
+settings activation, including unchanged HID shapes, so delayed inputs from
+the previous configuration are rejected without changing registered USB slots.
 
 The driver transmits at 500 kbit/s arbitration and 2 Mbit/s data with BRS.
 It receives extended data frames broadly for application subjects, services and

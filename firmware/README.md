@@ -8,7 +8,7 @@ jacks does not change its identity or controller slot.
 
 The firmware builds a real STM32 ELF, binary and Intel HEX. It has active CAN FD,
 USB HID plus CDC, discovery, bounded chain-local logical route allocation, an identity-based
-registry, persistent storage and explicit USB layout application. It uses the
+registry, persistent storage, routed runtime module configuration and explicit USB layout application. It uses the
 [Cyphal/CAN application contract](docs/cyphal.md), shared with the generic
 module firmware and Cockpit’s native STM32 adapter. The Pico simulator remains
 a separate transport and does not implement this console.
@@ -79,7 +79,8 @@ a fresh CAN input sequence is required before active reports resume.
 ## CDC console
 
 Use a serial terminal with newline-delimited commands. The line buffer is bounded
-at 79 characters; overlong lines are rejected. Replies are buffered without
+at 479 characters, with child configuration commands limited to 383 characters;
+overlong lines are rejected. Replies are buffered without
 blocking the CAN/USB service loop. Example registration flow:
 
 ```text
@@ -115,6 +116,8 @@ Cockpit uses correlated, bounded requests alongside the human console:
 cockpit 1 snapshot
 cockpit 2 65536 register 00112233445566778899aabbccddeeff
 cockpit 3 65536 apply
+cockpit 4 65536 config 00112233445566778899aabbccddeeff 1 claim 17
+cockpit 5 65536 config 00112233445566778899aabbccddeeff 1 get
 ```
 
 Use the epoch returned by the current snapshot rather than the example value.
@@ -122,7 +125,7 @@ All mutations (`register`, `unregister`, `save`, `apply`) require that epoch;
 a stale epoch returns `stale_epoch` without modifying state. Every response is
 one JSON line with `{id,ok,error,state}`. The state contains gateway identity,
 versions, running/layout state and all discovered or retained registered devices.
-Each device includes its node/lease, complete observed profile, pending/active
+Each device includes its node, source node, boot session, configuration generation and lease, complete observed profile, pending/active
 slots, `profileMatch`, `pendingProfileMatch`, input freshness and a report whose
 length matches that observed profile. Missing, stale, directly USB owned,
 unregistered or mismatched devices return neutral values under the observed
@@ -131,10 +134,26 @@ reconnect to the same gateway UID and query the resulting state.
 
 The receiver preserves a host’s first command when DTR opens so that a write
 arriving with the control-line change is not discarded. Input is flushed on
-close. Requests remain at most 79 characters, and JSON responses fit the fixed
-8 KiB writer; overflow fails without emitting partial JSON. The legacy console
-commands remain available. This contract covers inventory and gateway controller
-registration, not remote calibration, mapping, settings or firmware updates.
+close. Requests remain at most 479 characters, configuration children at most
+383 bytes, and JSON responses fit the fixed 12 KiB writer; overflow fails without
+emitting partial JSON. The legacy console commands remain available.
+
+`config <identity> <boot> <child>` forwards to the identified module over the
+current CAN route. The resulting JSON adds `targetConfig` for that request,
+including active/draft settings, generations and descriptor bytes. The module
+enforces a 30-second exclusive writer claim; Apply activates validated settings,
+Save persists active settings and Apply and save persists before activation.
+Mapping/calibration/name changes use the same C handlers on hardware and the
+native emulator. See the protocol repository's
+[`serial/runtime-configuration.md`](https://github.com/opensimgear/protocol/blob/main/serial/runtime-configuration.md)
+for the child-command grammar. Firmware updates remain future work.
+
+Settings activation renews the CAN lease even when HID shape is unchanged.
+Registered profile changes refresh the existing pending slot; explicit gateway
+Apply persists and activates that profile and reconnects USB. Control counts,
+axis usages and neutral values belong to that profile; a changed neutral requires
+gateway Apply even when descriptor bytes stay the same. Names, raw calibration
+endpoints, inversion and deadzone preserve the registered profile.
 
 ## CAN service and persistence
 

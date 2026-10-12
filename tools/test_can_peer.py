@@ -132,7 +132,8 @@ class ReferencePeerTest(unittest.TestCase):
                     offset = (profile["buttons"] + 7) // 8
                     for hat in range(profile["hats"]):
                         self.assertEqual((report[offset + hat // 2] >> (4 * (hat % 2))) & 15, 8, name)
-        self.assertFalse(responses["profile_changed"]["state"]["modules"][0]["pendingProfileMatch"])
+        self.assertTrue(responses["profile_changed"]["state"]["modules"][0]["pendingProfileMatch"])
+        self.assertTrue(responses["profile_changed"]["state"]["needsApply"])
         self.assertTrue(responses["profile_updated_pending"]["state"]["modules"][0]["pendingProfileMatch"])
         self.assertFalse(responses["profile_updated_pending"]["state"]["modules"][0]["profileMatch"])
         self.assertEqual(responses["stale_epoch"]["error"], "stale_epoch")

@@ -23,6 +23,18 @@ bool osg_gateway_cockpit_parse(const char *line,osg_gateway_cockpit_request_t *o
     if(!number(&p,&out->epoch) || !out->epoch || *p++!=' ') return false;
     if(!strcmp(p,"save")) { out->action=OSG_GW_COCKPIT_SAVE; return true; }
     if(!strcmp(p,"apply")) { out->action=OSG_GW_COCKPIT_APPLY; return true; }
+    if(!strncmp(p,"config ",7)) {
+        out->action=OSG_GW_COCKPIT_CONFIG; p+=7;
+        if(strlen(p)<35 || p[32]!=' ') return false;
+        char identity[33]; memcpy(identity,p,32); identity[32]=0;
+        if(!osg_gateway_identity_parse(identity,&out->identity)) return false;
+        p+=33;
+        if(!number(&p,&out->boot) || !out->boot || *p++!=' ') return false;
+        size_t length=strlen(p);
+        if(!length || length>=sizeof out->command) return false;
+        for(size_t i=0;i<length;i++) if((unsigned char)p[i]<32 || (unsigned char)p[i]>126) return false;
+        memcpy(out->command,p,length+1); return true;
+    }
     if(!strncmp(p,"register ",9)) { out->action=OSG_GW_COCKPIT_REGISTER; p+=9; }
     else if(!strncmp(p,"unregister ",11)) { out->action=OSG_GW_COCKPIT_UNREGISTER; p+=11; }
     else return false;
@@ -54,8 +66,8 @@ static void append(writer_t *w,const char *format,...) {
     w->length+=(size_t)n;
 }
 static const char *boolean(bool value) { return value?"true":"false"; }
-size_t osg_gateway_cockpit_response(const osg_gateway_t *g,const char uid[25],uint32_t id,
-                                   const char *error,char *out,size_t capacity) {
+size_t osg_gateway_cockpit_config_response(const osg_gateway_t *g,const char uid[25],uint32_t id,
+                                   const char *error,const char *target_config,char *out,size_t capacity) {
     if(!out || !capacity) return 0;
     out[0]=0;
     if(!g || !uid || strlen(uid)!=24) return 0;
@@ -77,8 +89,8 @@ size_t osg_gateway_cockpit_response(const osg_gateway_t *g,const char uid[25],ui
         uint8_t report[OSG_GW_MAX_REPORT_SIZE]; osg_gateway_profile_neutral(&m->profile,report);
         if(match && g->running && m->online && !m->direct_usb && m->has_input) memcpy(report,m->report,sizeof report);
         char identity[33]; osg_gateway_identity_format(&m->identity,identity);
-        append(&w,"%s{\"identity\":\"%s\",\"online\":%s,\"directUsb\":%s,\"node\":%u,\"lease\":%lu,\"profile\":{\"buttons\":%u,\"axes\":%u,\"hats\":%u,\"revision\":%u,\"axisUsage\":[",
-            first?"":",",identity,boolean(m->online),boolean(m->direct_usb),m->node,(unsigned long)m->lease,
+        append(&w,"%s{\"identity\":\"%s\",\"online\":%s,\"directUsb\":%s,\"node\":%u,\"sourceNode\":%u,\"boot\":%lu,\"configurationGeneration\":%lu,\"lease\":%lu,\"profile\":{\"buttons\":%u,\"axes\":%u,\"hats\":%u,\"revision\":%u,\"axisUsage\":[",
+            first?"":",",identity,boolean(m->online),boolean(m->direct_usb),m->node,m->source_node,(unsigned long)m->boot_session,(unsigned long)m->configuration_generation,(unsigned long)m->lease,
             m->profile.button_count,m->profile.axis_count,m->profile.hat_count,m->profile.revision);
         for(unsigned axis=0;axis<m->profile.axis_count;axis++) append(&w,"%s%u",axis?",":"",m->profile.axis_usage[axis]);
         append(&w,"],\"neutral\":[");
@@ -88,7 +100,13 @@ size_t osg_gateway_cockpit_response(const osg_gateway_t *g,const char uid[25],ui
         for(size_t byte=0;byte<length;byte++) append(&w,"%02x",report[byte]);
         append(&w,"\"}"); first=false;
     }
-    append(&w,"]}}\r\n");
+    append(&w,"]}");
+    if(target_config) append(&w,",\"targetConfig\":%s",target_config);
+    append(&w,"}\r\n");
     if(!w.valid) { out[0]=0; return 0; }
     return w.length;
+}
+size_t osg_gateway_cockpit_response(const osg_gateway_t *g,const char uid[25],uint32_t id,
+    const char *error,char *out,size_t capacity) {
+    return osg_gateway_cockpit_config_response(g,uid,id,error,NULL,out,capacity);
 }

@@ -8,9 +8,11 @@ gateway, physical CAN adapter or USB host compliance equipment was used.
 | Native Debug build, AppleClang 21, actual generated DSDL and libcanard transport linked | Passed |
 | CTest gateway behavior, flash journal and actual Cyphal transport suites | 3/3 passed |
 | Python native Cyphal peer tests, SocketCAN retry and fresh machine snapshots | 10/10 passed |
-| Native peer transport round trips | All five application types, source metadata, transfer-ID duplicates and maximum profiles passed |
+| Native transport round trips | All seven application types, FD/Classic fragmentation, source metadata, transfer-ID duplicates and maximum profiles passed |
+| Production-C native emulator, AddressSanitizer/UndefinedBehaviorSanitizer | Five acceptance flows passed: configuration/calibration/layout, maximum 128-button/8-axis/4-hat settings, first-user-save interruption, process persistence and initial-baseline recovery |
+| Adjacent gateway/module integration, AddressSanitizer/UndefinedBehaviorSanitizer | Ten clients, ownership/collision/reboot cases and three fixed stress seeds passed |
 | STM32G0B1CB cross-build, Arm GNU 15.3.1, MinSizeRel | ELF, binary, HEX and map generated |
-| Linker memory bounds | 48,500/126,976 bytes application flash; 67,712/131,072 bytes RAM |
+| Linker memory bounds | 51,528/126,976 bytes application flash; 76,672/131,072 bytes RAM |
 
 RAM usage includes the reserved 16 KiB stack and 512-byte heap. The final 4 KiB
 of flash is reserved for two journal pages and is absent from application image
@@ -54,8 +56,13 @@ interruption; CAN bit timing, ACK, termination and hot-plug behavior; USB VBUS
 attachment and suspend/resume; and joystick collection handling on Windows,
 Linux, macOS and target games. The matching generic module and native Cockpit adapter now share the documented
 Cyphal/CAN application types and CDC v2 snapshots; assembled end-to-end testing remains
-outstanding. Remote calibration/settings and firmware updates remain outside
-this inventory/registration contract.
+outstanding. Runtime calibration/settings now run through the same gateway CDC,
+Cyphal forwarding and module C handlers in native emulation. Tests cover draft
+ownership/expiry, invalid mappings, Unicode names, descriptor activation,
+calibrated reports, retained slots, interrupted settings/registry writes,
+stale input/completion rejection, reply replay without extra flash writes,
+bounded timeout recovery and restoration across process restart. Firmware updates
+remain future work.
 Use the [reference peer](../tools/README.md) for the first CAN bench test.
 
 Source review fixed the DTR-open race: the first incoming machine command is

@@ -2,6 +2,8 @@
 #include "gateway_usb.h"
 #include "opensimgear/gateway.h"
 #include "opensimgear/gateway_cockpit.h"
+#include "opensimgear/gateway_config.h"
+#include "opensimgear/gateway_layout.h"
 #include "opensimgear/cyphal.h"
 #include "opensimgear/line.h"
 #include "tusb.h"
@@ -18,8 +20,8 @@ static unsigned next_slot;
 static char response[OSG_GW_COCKPIT_RESPONSE_CAPACITY];
 static osg_gateway_delivery_t inflight_delivery;
 static size_t response_size,response_offset;
-static bool apply_pending,layout_detached;
-static uint32_t apply_at,reattach_at;
+static osg_gateway_layout_t layout;
+static osg_gateway_config_t configuration;
 
 static bool can_send(void *context,const osg_gateway_frame_t *frame) {
     (void)context;
@@ -61,12 +63,15 @@ static void identity(void) {
 }
 static bool cockpit_save(void *context) { (void)context; return save_registry(); }
 static void cockpit_command(const char *line,uint32_t now) {
-    osg_gateway_cockpit_request_t request;
+    osg_gateway_cockpit_request_t request={0};
     const char *error=NULL;
     bool apply=false;
     if(!osg_gateway_cockpit_parse(line,&request)) error="invalid_request";
-    else error=osg_gateway_cockpit_execute(&gateway,&request,cockpit_save,NULL,&apply);
-    if(apply) { apply_pending=true; apply_at=now+100U; }
+    else if(request.action==OSG_GW_COCKPIT_CONFIG) {
+        error=osg_gateway_config_start(&configuration,&gateway,&request,now);
+        if(!error) return;
+    } else error=osg_gateway_cockpit_execute(&gateway,&request,cockpit_save,NULL,&apply);
+    if(apply) osg_gateway_layout_schedule(&layout,now);
     char uid[25]; board_uid_hex(uid);
     response_size=osg_gateway_cockpit_response(&gateway,uid,request.id,error,response,sizeof response);
     if(!response_size) append("{\"id\":%lu,\"ok\":false,\"error\":\"response_overflow\",\"state\":null}\r\n",(unsigned long)request.id);
@@ -74,7 +79,7 @@ static void cockpit_command(const char *line,uint32_t now) {
 static void command(const char *line,uint32_t now) {
     if(!strncmp(line,"cockpit ",8)) cockpit_command(line,now);
     else if(!strcmp(line,"hello") || !strcmp(line,"identity") || !strcmp(line,"info")) identity();
-    else if(!strcmp(line,"help")) append("identity | inventory | registry | register <32hex> | unregister <32hex> | save | apply | diagnostics | cockpit <id> snapshot | cockpit <id> <epoch> register <32hex>|unregister <32hex>|save|apply\r\n");
+    else if(!strcmp(line,"help")) append("identity | inventory | registry | register <32hex> | unregister <32hex> | save | apply | diagnostics | cockpit <id> snapshot | cockpit <id> <epoch> register <32hex>|unregister <32hex>|save|apply|config <32hex> <boot> <child-command>\r\n");
     else if(!strcmp(line,"inventory")) {
         identity();
         for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) {
@@ -108,7 +113,7 @@ static void command(const char *line,uint32_t now) {
     else if(!strcmp(line,"apply")) {
         if(!osg_gateway_needs_apply(&gateway)) append("OK layout unchanged\r\n");
         else if(!save_registry()) append("ERR flash save failed; USB layout unchanged\r\n");
-        else { append("OK registry saved; applying USB layout\r\n"); apply_pending=true; apply_at=now+100U; }
+        else { append("OK registry saved; applying USB layout\r\n"); osg_gateway_layout_schedule(&layout,now); }
     } else if(!strcmp(line,"diagnostics")) {
         board_can_diagnostics_t can=board_can_diagnostics();
         append("can rx=%lu tx=%lu rxDrop=%lu txDrop=%lu txFailed=%lu queued=%u busOff=%u recovering=%u recoveries=%lu rxError=%u txError=%u halError=%08lx\r\n",
@@ -158,11 +163,16 @@ int main(void) {
     tud_disconnect();
     bool attached=false,serial_open=false,active=false,was_can_fault=false;
     uint32_t previous_recoveries=0;
-    char line_buffer[80]; osg_line_t line; osg_line_init(&line,line_buffer,sizeof line_buffer);
+    char line_buffer[OSG_GW_CONFIG_COMMAND_CAPACITY+96]; osg_line_t line; osg_line_init(&line,line_buffer,sizeof line_buffer);
     for(;;) {
         uint32_t now=board_millis(); bool vbus=board_usb_present();
-        if(layout_detached && (int32_t)(now-reattach_at)>=0) layout_detached=false;
-        bool should_attach=vbus && !layout_detached;
+        osg_gateway_layout_event_t layout_event=osg_gateway_layout_tick(&layout,now,response_size==0 && !configuration.busy);
+        if(layout_event==OSG_GATEWAY_LAYOUT_DETACH) {
+            tud_disconnect(); attached=false; active=false; invalidate_reports();
+            osg_gateway_apply_layout(&gateway);
+            if(!gateway_usb_prepare(&gateway)) board_fault();
+        }
+        bool should_attach=vbus && !layout.detached;
         if(should_attach!=attached) {
             attached=should_attach; invalidate_reports();
             if(attached) tud_connect(); else tud_disconnect();
@@ -192,7 +202,9 @@ int main(void) {
             uint8_t source=osg_cyphal_node_id(&cyphal);
             bool received=osg_cyphal_receive(&cyphal,&frame,now,&message);
             if(source!=osg_cyphal_node_id(&cyphal)) { migrate_can_source(now,running); break; }
-            if(received &&
+            if(received && message.type==OSG_GW_CONFIG_RESPONSE) {
+                (void)osg_gateway_config_receive(&configuration,&gateway,&message);
+            } else if(received &&
                osg_gateway_receive(&gateway,&message,now,&reply)==OSG_GW_RX_ASSIGNMENT)
                 (void)osg_cyphal_send(&cyphal,&reply,now);
         }
@@ -201,10 +213,19 @@ int main(void) {
             osg_cyphal_tick(&cyphal,now);
             if(source!=osg_cyphal_node_id(&cyphal)) migrate_can_source(now,running);
         }
+        osg_gateway_config_tick(&configuration,&gateway,&cyphal,now);
+        const char *config_error,*config_json;
+        uint32_t config_id=configuration.route.sequence;
+        if(osg_gateway_config_result(&configuration,&config_error,&config_json)) {
+            char uid[25]; board_uid_hex(uid);
+            response_size=osg_gateway_cockpit_config_response(&gateway,uid,config_id,config_error,config_json,response,sizeof response);
+            if(!response_size) append("{\"id\":%lu,\"ok\":false,\"error\":\"response_overflow\",\"state\":null}\r\n",(unsigned long)config_id);
+        }
         bool connected=attached && tud_cdc_connected();
         if(connected!=serial_open) {
             serial_open=connected; osg_line_init(&line,line_buffer,sizeof line_buffer);
             response_size=response_offset=0;
+            if(!connected) osg_gateway_config_cancel(&configuration);
             /* DTR and the first host write may arrive in the same USB task.
              * Preserve that request on open; discard old input only on close. */
             if(!connected) tud_cdc_read_flush();
@@ -215,17 +236,11 @@ int main(void) {
             tud_cdc_write_flush();
         }
         if(response_offset==response_size) response_offset=response_size=0;
-        for(unsigned budget=0;connected && !apply_pending && !response_size && budget<32 && tud_cdc_available();budget++) {
+        for(unsigned budget=0;connected && !layout.pending && !configuration.busy && !response_size && budget<32 && tud_cdc_available();budget++) {
             char byte; if(tud_cdc_read(&byte,1)!=1) break;
             osg_line_result_t result=osg_line_feed(&line,byte);
             if(result==OSG_LINE_READY) command(line_buffer,now);
             else if(result==OSG_LINE_TOO_LONG) append("ERR line too long\r\n");
-        }
-        if(apply_pending && !response_size && (int32_t)(now-apply_at)>=0) {
-            tud_disconnect(); attached=false; layout_detached=true; reattach_at=now+250U;
-            active=false; invalidate_reports(); osg_gateway_apply_layout(&gateway);
-            if(!gateway_usb_prepare(&gateway)) board_fault();
-            apply_pending=false;
         }
         hid_task(now);
         board_led(can_fault ? ((now/100U)&1U)!=0 : (active ? ((now/500U)&1U)!=0 : ((now/1000U)&1U)!=0));

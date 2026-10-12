@@ -24,18 +24,25 @@ slots survive disconnects and gateway restarts. Direct device USB takes ownershi
 and leaves the gateway slot neutral. The Pico simulator keeps its own adapter.
 Native behavior/journal tests, actual transport integration and the STM32 target
 cross-build validate source behavior; physical USB/CAN acceptance remains pending.
-Device calibration/settings, outputs and firmware updates remain future work.
+Cockpit can also claim a module configuration draft, change input mappings and
+axis calibration, and apply or persist settings through the gateway. Configuration
+chunks use the current module identity, boot session, CAN source, lease and gateway
+epoch. A changed module profile updates its existing pending slot; explicit gateway
+Apply saves it and reconnects USB. Profiles include control counts, axis usages
+and neutral values. The native emulator links these production C
+handlers and tests the complete Cockpit flow before hardware assembly. Outputs
+and firmware updates remain future work.
 
 ## Connectors and power
 
 Both sockets use the same four contacts, numbered by the selected manufacturer's drawing:
 
-| Contact | Signal |
-| --- | --- |
-| 1 | Protected BUS_12V |
-| 2 | CAN_H |
-| 3 | CAN_L |
-| 4 | GND |
+| Contact | Signal            |
+| ------- | ----------------- |
+| 1       | Protected BUS_12V |
+| 2       | CAN_H             |
+| 3       | CAN_L             |
+| 4       | GND               |
 
 Use continuity-checked straight-through wiring with CAN_H/L on a qualified twisted pair. Ordinary reversed or coiled handset cords are not qualified CAN cables. Put 120 Ω across contacts 2/3 in a removable endpoint plug at each physical end of the chain; an inline gateway has no termination. A 4P4C jack is commonly called RJ9/RJ10/RJ22 rather than RJ11. This connector choice follows the requested four-position, four-contact standard.
 

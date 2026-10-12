@@ -45,6 +45,17 @@ submitted report rather than newer CAN input, and reject stale run/ownership/
 freshness/session/lease contexts, wrong callback bytes/IDs/lengths and neutral
 fallbacks. Machine console tests cover decimal overflow, guarded mutation epochs,
 persistence failure before apply and bounded JSON output.
+Configuration tests additionally reject stale boot/epoch/source/lease/request
+contexts and reordered/duplicate reply chunks, and verify response-drain and
+250 ms descriptor reconnect boundaries. The shared transport suite covers all
+seven subjects across ten source nodes within its fixed allocator.
+
+The adjacent Cockpit native emulator links the production gateway console,
+forwarder, registry/layout, module configuration/acquisition and Cyphal code.
+Its sanitizer acceptance tests exercise all controls, calibration, writer
+ownership, descriptor/report lengths, persisted/volatile reboot, interrupted
+flash, cached replies and process restart. See
+`cockpit/simulator/native-gateway/README.md` in the sibling checkout.
 
 `osg_gateway_test --cockpit-vectors` emits actual formatter responses for
 discovery, pending registration, maximum active input, direct USB, offline slots,

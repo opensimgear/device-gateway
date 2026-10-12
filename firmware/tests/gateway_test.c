@@ -1,5 +1,7 @@
 #include "opensimgear/gateway.h"
 #include "opensimgear/gateway_cockpit.h"
+#include "opensimgear/gateway_config.h"
+#include "opensimgear/gateway_layout.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -13,7 +15,7 @@ static osg_gateway_profile_t profile(void) {
 }
 static osg_gateway_message_t announce(unsigned id) {
     return (osg_gateway_message_t){.type=OSG_GW_ANNOUNCE,.identity=identity(id),
-        .boot_session=100,.source_node=(uint8_t)(20+id),.profile=profile()};
+        .boot_session=100,.source_node=(uint8_t)(20+id),.profile=profile(),.configuration_generation=1};
 }
 static osg_gateway_receive_result_t receive(osg_gateway_t *g,const osg_gateway_message_t *msg,
                                             uint32_t now,osg_gateway_message_t *reply) {
@@ -349,6 +351,55 @@ static void cockpit_test(void) {
     assert(strstr(output,"\"id\":3,\"ok\":false") && strstr(output,"\"needsApply\":true"));
     assert(!osg_gateway_cockpit_response(&g,"0123456789abcdef01234567",3,NULL,output,10) && !output[0]);
 }
+static void configuration_test(void) {
+    osg_gateway_t g; assert(osg_gateway_init(&g,65536,NULL));
+    (void)discover(&g,1,0);
+    osg_gateway_config_t c={0}; osg_gateway_cockpit_request_t request;
+    assert(osg_gateway_cockpit_parse("cockpit 9 65536 config 00000000000000000000000000000001 100 claim 17",&request));
+    assert(request.action==OSG_GW_COCKPIT_CONFIG && request.boot==100 && !strcmp(request.command,"claim 17"));
+    request.id=0;assert(!strcmp(osg_gateway_config_start(&c,&g,&request,0),"invalid_request"));request.id=9;
+    assert(!osg_gateway_cockpit_parse("cockpit 9 65536 config 00000000000000000000000000000001 0 get",&request));
+    assert(osg_gateway_cockpit_parse("cockpit 9 65536 config 00000000000000000000000000000001 100 get",&request));
+    request.epoch++; assert(!strcmp(osg_gateway_config_start(&c,&g,&request,0),"stale_epoch"));request.epoch--;
+    request.boot++; assert(!strcmp(osg_gateway_config_start(&c,&g,&request,0),"stale_module_boot"));request.boot--;
+    assert(!osg_gateway_config_start(&c,&g,&request,0));
+    assert(!strcmp(osg_gateway_config_start(&c,&g,&request,0),"configuration_busy"));
+    osg_gateway_message_t response=c.route; response.type=OSG_GW_CONFIG_RESPONSE;
+    const char reply[]="OK\n{\"generation\":1,\"owner\":0}";
+    response.config_total=(uint16_t)strlen(reply); response.config_offset=24;
+    response.config_length=(uint8_t)(strlen(reply)-24);memcpy(response.config_data,reply+24,response.config_length);
+    assert(!osg_gateway_config_receive(&c,&g,&response)); /* Reordering cannot complete a partial reply. */
+    response.config_offset=0;response.config_length=24;memcpy(response.config_data,reply,24);
+    response.source_node++;assert(!osg_gateway_config_receive(&c,&g,&response));response.source_node--;
+    response.lease++;assert(!osg_gateway_config_receive(&c,&g,&response));response.lease--;
+    response.gateway_epoch++;assert(!osg_gateway_config_receive(&c,&g,&response));response.gateway_epoch--;
+    response.boot_session++;assert(!osg_gateway_config_receive(&c,&g,&response));response.boot_session--;
+    response.sequence++;assert(!osg_gateway_config_receive(&c,&g,&response));response.sequence--;
+    assert(osg_gateway_config_receive(&c,&g,&response));assert(!osg_gateway_config_receive(&c,&g,&response));
+    response.config_offset=24;response.config_length=(uint8_t)(strlen(reply)-24);memcpy(response.config_data,reply+24,response.config_length);
+    assert(osg_gateway_config_receive(&c,&g,&response));
+    const char *error,*json;assert(osg_gateway_config_result(&c,&error,&json) && !error && !strcmp(json,reply+3));
+    assert(!osg_gateway_config_start(&c,&g,&request,0));
+    g.modules[0].lease++;osg_gateway_config_tick(&c,&g,NULL,1);
+    assert(osg_gateway_config_result(&c,&error,&json) && !strcmp(error,"configuration_route_changed"));
+    g.modules[0].lease--;
+    osg_gateway_layout_t layout={0};osg_gateway_layout_schedule(&layout,10);
+    assert(osg_gateway_layout_tick(&layout,200,false)==OSG_GATEWAY_LAYOUT_IDLE);
+    assert(osg_gateway_layout_tick(&layout,200,true)==OSG_GATEWAY_LAYOUT_DETACH && layout.detached);
+    assert(osg_gateway_layout_tick(&layout,449,true)==OSG_GATEWAY_LAYOUT_IDLE);
+    assert(osg_gateway_layout_tick(&layout,450,true)==OSG_GATEWAY_LAYOUT_ATTACH && layout.reconnects==1);
+    osg_gateway_identity_t id=identity(1);assert(osg_gateway_register(&g,&id));
+    osg_gateway_apply_layout(&g);osg_gateway_set_running(&g,true);
+    osg_gateway_message_t old=discover(&g,1,2),old_report=input(old,50);
+    assert(receive(&g,&old_report,3,NULL)==OSG_GW_RX_ACCEPTED);
+    uint8_t packet[OSG_GW_MAX_REPORT_SIZE+1]={1};osg_gateway_delivery_t delivery;
+    size_t size=osg_gateway_delivery_prepare(&g,0,packet+1,sizeof packet-1,&delivery);assert(delivery.valid);
+    osg_gateway_message_t changed=announce(1),assignment,ack;changed.configuration_generation=2;
+    assert(receive(&g,&changed,4,&assignment)==OSG_GW_RX_ASSIGNMENT && assignment.lease!=old.lease);
+    assert(!osg_gateway_needs_apply(&g)); /* Settings generation is independent of HID shape. */
+    assert(receive(&g,&old_report,5,NULL)==OSG_GW_RX_REJECTED);
+    assert(!osg_gateway_delivery_complete(&g,&delivery,packet,size+1,&ack));
+}
 static void snapshot(void) {
     osg_gateway_registry_t r={0};
     for(unsigned i=0;i<10;i++) r.slots[i]=(osg_gateway_slot_t){.occupied=true,.identity=identity(i+1),.profile=maximum_profile()};
@@ -389,6 +440,6 @@ static void cockpit_vectors(void) {
 int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--snapshot")) { snapshot(); return 0; }
     if(argc==2 && !strcmp(argv[1],"--cockpit-vectors")) { cockpit_vectors(); return 0; }
-    protocol_test(); lifecycle_test(); bounds_and_wrap_test(); registry_test(); descriptor_test(); maximum_profile_test(); delivery_test(); transport_source_test(); cockpit_test();
+    protocol_test(); lifecycle_test(); bounds_and_wrap_test(); registry_test(); descriptor_test(); maximum_profile_test(); delivery_test(); transport_source_test(); cockpit_test(); configuration_test();
     puts("gateway core: all tests passed"); return 0;
 }

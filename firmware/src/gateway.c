@@ -120,7 +120,7 @@ osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *g,const osg_gate
         osg_gateway_module_t *m=&g->modules[index];
         bool same=m->occupied && osg_gateway_identity_equal(&m->identity,&msg.identity);
         bool renew=!same || !m->online || m->source_node!=msg.source_node || m->boot_session!=msg.boot_session ||
-                   !osg_gateway_profile_equal(&m->profile,&msg.profile);
+                   m->configuration_generation!=msg.configuration_generation || !osg_gateway_profile_equal(&m->profile,&msg.profile);
         if(renew) {
             uint32_t lease=allocate_lease(g);
             if(!lease) { g->rejected_frames++; return OSG_GW_RX_FULL; }
@@ -130,8 +130,15 @@ osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *g,const osg_gate
             if(!node) { g->rejected_frames++; return OSG_GW_RX_FULL; }
             m->occupied=true; m->identity=msg.identity; m->profile=msg.profile;
             m->boot_session=msg.boot_session; m->node=node; m->source_node=msg.source_node; m->lease=lease;
+            m->configuration_generation=msg.configuration_generation;
         }
         m->online=true; m->last_seen=now; m->direct_usb=msg.direct_usb;
+        /* Refresh an already registered draft slot after module configuration.
+         * The active descriptor stays immutable until persistent gateway Apply. */
+        int registered=osg_gateway_find_slot(&g->pending,&m->identity);
+        if(registered>=0 && !osg_gateway_profile_equal(&g->pending.slots[registered].profile,&m->profile)) {
+            g->pending.slots[registered].profile=m->profile; g->pending.generation++;
+        }
         if(m->direct_usb) neutral(m);
         osg_gateway_message_t assignment={.type=OSG_GW_ASSIGN,.node=m->node,
             .identity=m->identity,.boot_session=m->boot_session,.lease=m->lease,.gateway_epoch=g->epoch};

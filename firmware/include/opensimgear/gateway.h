@@ -8,7 +8,7 @@ typedef struct {
     osg_gateway_identity_t identity;
     osg_gateway_profile_t profile;
     uint8_t node,source_node; /* application route and independent Cyphal/CAN source */
-    uint32_t boot_session, lease, sequence, input_sequence, last_seen, last_input;
+    uint32_t boot_session, lease, sequence, input_sequence, last_seen, last_input,configuration_generation;
     uint64_t delivery_generation;
     uint8_t report[OSG_GW_MAX_REPORT_SIZE];
 } osg_gateway_module_t;

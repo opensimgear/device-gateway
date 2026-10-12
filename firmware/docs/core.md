@@ -1,6 +1,7 @@
 # Portable gateway core
 
-`gateway.c`, `gateway_registry.c`, `gateway_journal.c` and `gateway_cockpit.c` are allocation-free C11
+`gateway.c`, `gateway_registry.c`, `gateway_journal.c`, `gateway_cockpit.c`,
+`gateway_config.c` and `gateway_layout.c` are allocation-free C11
 and have no MCU, RTOS, TinyUSB or host-library dependency. The STM32 board
 adapts CAN FD frames, time, USB, and persistent storage around these interfaces.
 All mutation belongs to a single event loop; callbacks must not mutate the core
@@ -19,7 +20,9 @@ the first free slot. `osg_gateway_unregister()` stages removal without compactin
 other slots. Profiles comprise buttons, axis usages, neutrals and revision; neutral
 values are part of the registered layout. A staged change affects only pending
 state. `osg_gateway_needs_apply()` compares effective profiles and identities,
-not the generation counter.
+not the generation counter. A valid new announcement from an already registered
+module refreshes its pending profile in the same slot. The active profile stays
+fixed until explicit gateway Apply.
 
 For an explicit layout apply, first save the pending registry successfully, then
 disconnect USB, call `osg_gateway_apply_layout()`, rebuild the HID descriptor,
@@ -105,8 +108,19 @@ only from TinyUSB’s successful interrupt report callback.
 snapshots. Mutation epochs must match before staging or flash callbacks run.
 Apply only schedules USB activation after persistence succeeds. The fixed writer
 returns an empty string on overflow, and tests parse fresh maximum snapshots
-independently as JSON. Full device calibration/settings/update commands remain
-outside this inventory/registry contract.
+independently as JSON. Routed module configuration adds a `targetConfig` object
+to the same correlated response. Configuration requests require the current
+gateway epoch and module boot session, and each fragment/reply binds identity,
+logical node, source node, lease, epoch and request ID. A changed route rejects
+the request; incomplete responses expire after 4 seconds. Fixed buffers bound
+commands to 383 bytes, module responses to 4095 bytes and combined CDC responses
+to 12287 bytes. Firmware updates remain future work.
+
+`gateway_layout.c` waits for the saved Apply response to drain, then emits the
+detach event after a 100 ms grace period. The board disconnects USB, invalidates
+old delivery state, activates the pending registry and rebuilds the descriptor.
+Reattachment follows at least 250 ms later. This same state machine runs in the
+native firmware emulator; the emulator replaces physical CAN/USB/flash only.
 
 `osg_gateway_receive()` accepts complete decoded application messages with Cyphal
 source metadata. The board owns a separate `osg_cyphal_t` and feeds raw frames
