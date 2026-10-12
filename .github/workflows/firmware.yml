@@ -1,0 +1,36 @@
+name: Gateway firmware
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  portable-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Configure portable behavior and flash journal tests
+        working-directory: firmware
+        run: cmake --preset native
+      - name: Build and test
+        working-directory: firmware
+        run: |
+          cmake --build --preset native --parallel
+          ctest --preset native
+      - name: Check SocketCAN peer protocol vectors
+        env:
+          OSG_GATEWAY_TEST: firmware/build/native/osg_gateway_test
+        run: python3 -m unittest discover -s tools -p 'test_*.py'
+  board-build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install Arm GNU compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends gcc-arm-none-eabi libnewlib-arm-none-eabi
+      - name: Configure compile-only STM32G0B1CB build
+        # Unallocated test placeholders: never flash or distribute these USB IDs.
+        working-directory: firmware
+        run: cmake --preset gateway -DOSG_USB_VID=0xFFFF -DOSG_USB_PID=0xFFFF
+      - name: Build ELF, HEX and binary
+        working-directory: firmware
+        run: cmake --build --preset gateway --parallel

@@ -17,4 +17,7 @@ target/
 *.kicad_prl
 *.kicad_sch.lck
 *.kicad_pcb.lck
+~*.kicad_*.lck
 *-backups/
+__pycache__/
+*.py[cod]

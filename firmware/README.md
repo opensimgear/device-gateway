@@ -1,5 +1,144 @@
-# Firmware
+# STM32 CAN gateway firmware
 
-This folder is initialized for device-specific C firmware. It contains source, include, board-target, capability-profile, dependency-configuration, and test locations; no flashable firmware or build target is implemented yet.
+The Rev A target is `gateway_g0b1cb_rev_a`: STM32G0B1CBT6, USB-C device,
+one CAN FD controller/transceiver, two parallel **4P4C** chain jacks, and a
+center-positive 12 V barrel input. The jacks share one bus and carry
+pin 1 BUS12V, pin 2 CANH, pin 3 CANL, pin 4 GND. Moving a module between the
+jacks does not change its identity or controller slot.
 
-Reuse firmware-common and the separately versioned protocol definitions. Module prototype baseline is STM32G0B1 with TinyUSB (HID plus CDC) and libcanard (Cyphal/CAN FD); exact tested dependencies and reference-board details will be added during implementation. Gateway hardware remains undecided.
+The firmware builds a real STM32 ELF, binary and Intel HEX. It has active CAN FD,
+USB HID plus CDC, discovery, bounded chain-local node allocation, an identity-based
+registry, persistent storage and explicit USB layout application. It uses the
+private [CAN FD bring-up protocol](docs/can-fd-bringup-v1.md); current module
+firmware and the cockpit simulator do not implement this transport or console.
+Electrical operation and host/game treatment of multiple HID collections still
+require assembled-board validation.
+
+## Build and tests
+
+Native tests need CMake 3.24 or newer and a C11 compiler. They do not fetch any
+external dependency or need an Arm compiler:
+
+```sh
+cd firmware
+cmake --preset native
+cmake --build --preset native --parallel
+ctest --preset native
+cd ..
+OSG_GATEWAY_TEST=firmware/build/native/osg_gateway_test python3 -m unittest discover -s tools -p 'test_*.py'
+```
+
+For the board build, put Arm GNU's `arm-none-eabi-*` tools on PATH. Supply USB
+identifiers you are authorized to use; no VID/PID is allocated or silently chosen:
+
+```sh
+cd firmware
+cmake --preset gateway -DOSG_USB_VID=<your-vid> -DOSG_USB_PID=<your-pid>
+cmake --build --preset gateway --parallel
+```
+
+Outputs are `build/gateway/osg_gateway.{elf,bin,hex,map}`. Flash the HEX with SWD
+using a programmer configured for **STM32G0B1CB, 128 KiB flash**, preserving the
+last two pages when retaining the registry. Never flash or distribute the
+unallocated `0xFFFF:0xFFFF` identifiers used solely by CI compile checks.
+
+The build pins firmware-common to commit
+`35e06787fb9696977fe92d20c5ff5afc1e3e1ebf`, whose pins select TinyUSB, ST HAL,
+CMSIS, libcanard and the canonical protocol source. The current bring-up protocol
+is implemented in this gateway; libcanard and the canonical protocol are pinned
+for later integration and are not linked into its wire path. Dependency clones
+are stored under the workspace `.research/gateway-deps` directory. See
+[dependency configuration](cmake/README.md) for local source overrides.
+
+## USB and registered controllers
+
+The MCU's 96-bit factory UID is the stable 24-hex-character gateway identity and
+USB serial number. The CDC `identity` response includes the discriminator
+`gatewayType=stm32-can-bringup protocol=1`. Module identities are separate
+16-byte values printed as 32 hexadecimal digits.
+
+There are ten permanent registry slots, each retaining its module identity and
+profile. One HID interface contains a standard joystick top-level application
+collection per occupied slot; report ID is slot index plus one. Reports contain
+up to 64 buttons and eight unsigned 16-bit axes. An empty registry has a vendor
+management collection, report ID 11, and no joystick. HID descriptors change
+only on explicit `apply` or reboot after `save`; discovery and temporary loss
+do not re-enumerate USB. Registered modules that are absent, stale, directly USB
+owned or profile mismatched produce their configured neutral values.
+
+The single interface fits the STM32 full-speed endpoint budget. OS/game mapping
+of multiple collections must be checked on Windows, Linux and macOS; this layout
+is not equivalent to the Pico simulator's multiple HID interfaces. USB attaches
+only while PB0 senses VBUS. Detach, reset, suspend and resume invalidate input;
+a fresh CAN input sequence is required before active reports resume.
+
+## CDC console
+
+Use a serial terminal with newline-delimited commands. The line buffer is bounded
+at 79 characters; overlong lines are rejected. Replies are buffered without
+blocking the CAN/USB service loop. Example registration flow:
+
+```text
+identity
+inventory
+register 00112233445566778899aabbccddeeff
+registry
+apply
+```
+
+| Command | Result |
+| --- | --- |
+| `identity`, `info`, `hello` | Stable gateway identity, board and protocol |
+| `inventory` | Discovered identities, online/ownership/profile state, node and registry slots |
+| `registry` | Pending and active identities for each permanent slot |
+| `register <32hex>` | Stage the observed online module's identity and current profile |
+| `unregister <32hex>` | Stage removal without renumbering other slots |
+| `save` | Persist the pending registry; activate on `apply` or next boot |
+| `apply` | Persist first, disconnect USB, activate pending layout, rebuild descriptor and reconnect after 250 ms |
+| `diagnostics` | CAN errors/drop counts, queue depth, bus-off recovery and protocol counters |
+| `help` | Command list |
+
+Unregistered modules are visible in inventory but do not become HID controllers.
+A registered module may be directly USB owned; its gateway report stays neutral
+until ownership is released and fresh input arrives. Registration requires an
+online discovery so the stored profile describes the actual module.
+
+## CAN service and persistence
+
+Normal CAN FD uses 500 kbit/s arbitration, 2 Mbit/s data and bit-rate switching.
+The hardware filter accepts the private protocol prefix; software validates full
+IDs, payload lengths, CRCs, identity, lease, boot session and sequence. The receive
+budget is four frames per loop. The eight-frame transmit queue sends one request
+at a time, disables automatic hardware retransmission, and allows at most three
+attempts with 20 ms retries. A request that still cannot cancel at 40 ms forces
+controller recovery. Bus-off recovery runs at one-second intervals and
+revokes module leases. Diagnostics expose FIFO losses and queue drops. Inputs
+neutralize after 250 ms without fresh input; nodes go offline after 1500 ms.
+
+The application owns only the first 124 KiB of flash. Pages at `0x0801F000` and
+`0x0801F800` form a two-page journal. Each record contains a sequence, CRC,
+boot lease-block base and the portable 500-byte registry. The inactive page is
+erased, programmed and read back before its commit doubleword is programmed
+last. Page indexes account for the actual MCU bank configuration. Power failure
+before commit retains the previous complete record.
+
+Before input can run, each boot reserves and persists a new block of 65,536
+lease values. At most 65,535 leases can be issued in one boot; exhaustion rejects
+new allocation until a reboot. Epoch wrap, a boot lease-block write failure, a corrupt
+registry, or two nonblank invalid pages cause a fault with transceiver standby
+and steady LED. Completely erased pages are treated as a virgin device. A
+factory erase resets the lease history: power-cycle the entire module chain
+before reuse, not only the gateway. Every boot/save/apply erases one journal
+page; endurance and interrupted hardware erase/program need bench qualification.
+A failed CDC `save` or `apply` returns an error and keeps the active layout and
+service running; it does not enter the boot fault state.
+
+The linker uses the guaranteed 128 KiB SRAM region and reserves 16 KiB for stack
+plus 512 bytes for heap, avoiding dependence on the optional additional parity
+SRAM. Arm GCC emits `.su` stack-usage files for reviewing call paths. ST describes
+the SRAM distinction in the
+[STM32G0B1 datasheet, section 3.4](https://www.st.com/resource/en/datasheet/stm32g0b1kb.pdf).
+
+See [board wiring and bring-up](boards/gateway_g0b1cb_rev_a/README.md),
+[portable behavior](docs/core.md), [CAN peer utility](../tools/README.md), and
+[validation results](VALIDATION.md).

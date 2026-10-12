@@ -1,0 +1,10 @@
+(version 1)
+(rule "Prototype plated-pad to hole clearance"
+  (constraint hole_clearance (min 0.15mm)))
+
+(rule "Powered CAN feed width"
+  (condition "A.Type == 'Track' && (A.NetName == '/BUS_12V' || A.NetName == '/DC12_RAW' || A.NetName == '/DC12_FUSED')")
+  (constraint track_width (min 1mm)))
+(rule "Protected regulator power width"
+  (condition "A.Type == 'Track' && (A.NetName == '/BUCK_IN' || A.NetName == '/BUS_FUSED' || A.NetName == '/BUCK_5V' || A.NetName == '/SYS_5V')")
+  (constraint track_width (min 0.5mm)))

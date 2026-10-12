@@ -1,0 +1,1 @@
+(sym_lib_table (version 7) (lib (name "OpenSimGear") (type "KiCad") (uri "${KIPRJMOD}/OpenSimGear.kicad_sym") (options "") (descr "Authored prototype parts")) (lib (name "KiCad") (type "KiCad") (uri "${KIPRJMOD}/KiCad.kicad_sym") (options "") (descr "Selected KiCad symbols; see LICENSE-KICAD.md")))

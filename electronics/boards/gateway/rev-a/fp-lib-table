@@ -1,0 +1,1 @@
+(fp_lib_table (version 7) (lib (name "KiCad") (type "KiCad") (uri "${KIPRJMOD}/KiCad.pretty") (options "") (descr "Selected KiCad footprints; see LICENSE-KICAD.md")) (lib (name "OpenSimGear") (type "KiCad") (uri "${KIPRJMOD}/OpenSimGear.pretty") (options "") (descr "Manufacturer land patterns authored for this design")))
