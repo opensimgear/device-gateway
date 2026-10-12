@@ -1,4 +1,4 @@
-# OpenSimGear gateway
+# OpenSimGear device-gateway
 
 STM32G0B1 USB-to-CAN FD gateway with **USB-C, two parallel 4P4C powered CAN sockets, and a centre-positive 5.5 × 2.1 mm 12 V power socket**. The two CAN sockets continue one linear bus; they are not separate controller channels. The gateway can sit at either end or in the middle of the chain.
 

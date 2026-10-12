@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(osg_gateway LANGUAGES C ASM)
+project(osg_device_gateway LANGUAGES C ASM)
 option(OSG_BUILD_BOARD "Build STM32G0B1CB Rev A firmware" OFF)
 add_library(osg_gateway_core STATIC src/gateway.c src/gateway_protocol.c src/gateway_registry.c src/gateway_journal.c)
 target_include_directories(osg_gateway_core PUBLIC include)
