@@ -49,6 +49,21 @@ An explicit dependency source is used as supplied. The normal build checks that 
 
 ## Gateway diagnostics
 
+The normal CDC endpoint supports device actions:
+
+```text
+cockpit <request-id> <epoch> action <module-identity32> <boot> describe 0
+cockpit <request-id> <epoch> action <module-identity32> <boot> invoke <catalogue-revision> led.rgb.set_color FF0000
+cockpit <request-id> <epoch> action <module-identity32> <boot> state
+```
+
+Use the current epoch/boot from `snapshot` and the action IDs/types from `describe`.
+Complete module replies appear as `targetAction`; its `ok` field reports device
+validation/execution independently of gateway transport success. Timeouts leave the
+result uncertain: read `state` instead of replaying an invocation. The device
+simulation supplies RGB/boolean LEDs through the production action dispatcher.
+These outputs are software state; the simulation does not drive physical LEDs.
+
 The process accepts diagnostic commands on its own stdin. These commands are unavailable through the CDC endpoint used by Cockpit:
 
 ```text
@@ -77,7 +92,7 @@ The repository's E2E runner separately provisions the real device simulation and
 
 ## Local transport contract
 
-Runtime discovery lives in the current user's private `/tmp/opensimgear-<uid>/gateways/` directory. `<gateway-identity>.json` advertises protocol 3, role `gateway`, serial number, process ID, and a loopback TCP port. CDC lines and gateway responses use the same protocol as hardware. Discovery is removed while applying a layout and on orderly exit; clients reject advertisements belonging to dead processes.
+Runtime discovery lives in the current user's private `/tmp/opensimgear-<uid>/gateways/` directory by default. Set `OSG_SIMULATION_NAMESPACE` to a name of 1–31 ASCII letters, digits, `.`, `_` or `-` on gateway, devices and Cockpit to use the separate `/tmp/opensimgear-<uid>/gateways-<name>/` directory. Empty or malformed names are rejected before startup. Namespaces isolate tests from a running desktop Cockpit, which otherwise discovers and connects to every default simulator gateway. The CDC endpoint supports one client at a time; a namespaced test does not compete with the desktop for that connection. `<gateway-identity>.json` advertises protocol 3, role `gateway`, serial number, process ID, and a loopback TCP port. CDC lines and gateway responses use the same protocol as hardware. Discovery is removed while applying a layout and on orderly exit; clients reject advertisements belonging to dead processes.
 
 `<gateway-identity>.can.json` advertises a protocol-1 loopback UDP CAN broker. Devices send a 92-byte wire packet, independent of host struct layout:
 
@@ -93,3 +108,5 @@ Runtime discovery lives in the current user's private `/tmp/opensimgear-<uid>/ga
 | 28–91 | CAN bytes; hello starts with the little-endian process ID; reply starts with admission status |
 
 Admission status is `0` for accepted, `1` for duplicate identity, and `2` for a full bus. Devices renew admission every 500 ms. Peers expire after 2 seconds or process exit. Frames are delivered to the production gateway core and relayed to other peers, allowing normal Cyphal node collision handling. Transmit deadlines are checked against each process's local clock before transmission.
+
+The `sim <id> inspect` diagnostics include the pending/detached/draft layout phase, apply/reattach deadlines, saved target generation and configuration-busy flag alongside the monotonic clock. These fields distinguish layout publication from a host reconnect failure.

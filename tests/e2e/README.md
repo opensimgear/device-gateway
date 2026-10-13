@@ -50,6 +50,13 @@ this repository’s `.e2e/` to force clean provisioning. Run one bootstrap per r
 at a time. Bootstrap retry, executable-mode and submodule behavior can be checked
 without network access using `python3 -m unittest discover -s tests/e2e -p 'test_*.py'`.
 
+Each gateway acceptance run sets a fresh `OSG_SIMULATION_NAMESPACE` for its child
+processes and records it in `result.json`. CDC discovery uses the corresponding
+private `/tmp/opensimgear-<uid>/gateways-<name>/` directory, so an already running
+desktop Cockpit cannot take the test gateway's single CDC connection after USB
+layout detach/reconnect. The default simulator discovery path remains available
+for ordinary development. Namespace/path bounds have separate native-runner tests.
+
 The gateway scenario exercises three independently launched JSON devices through
 real CDC and CAN transports, including device-before-gateway startup, profile changes,
 saved configuration, automatic append and offline ghosts, generated HID layouts,

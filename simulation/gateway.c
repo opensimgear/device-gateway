@@ -176,8 +176,10 @@ static void inspect(uint32_t id,bool ok,const char *error) {
         fprintf(response_output,"%s{\"reportId\":%u,\"hex\":\"",first?"":",",simulation.gateway.active.slots[slot].report_id);
         hex(bytes,size); fprintf(response_output,"\"}"); first=false;
     }
-    fprintf(response_output,"],\"sourceNode\":%u,\"nodeCollisions\":%u}}\n",
-        osg_cyphal_node_id(&simulation.gateway_can),simulation.node_collisions);
+    fprintf(response_output,"],\"sourceNode\":%u,\"nodeCollisions\":%u,\"layoutDraft\":%u,\"layoutPending\":%u,\"layoutDetached\":%u,\"layoutApplyAt\":%u,\"layoutReattachAt\":%u,\"layoutTargetGeneration\":%u,\"configurationBusy\":%u}}\n",
+        osg_cyphal_node_id(&simulation.gateway_can),simulation.node_collisions,
+        simulation.layout.draft,simulation.layout.pending,simulation.layout.detached,
+        simulation.layout.apply_at,simulation.layout.reattach_at,simulation.layout.target.generation,simulation.config.busy);
     fflush(response_output);
 }
 static void admin(const char *line) {
@@ -202,7 +204,7 @@ static void command(const char *line) {
     }
     osg_gateway_cockpit_request_t request={0}; const char *error=NULL,*json=NULL; bool apply=false;
     if(!osg_gateway_cockpit_parse(line,&request)) error="invalid_request";
-    else if(request.action==OSG_GW_COCKPIT_CONFIG) {
+    else if(request.action==OSG_GW_COCKPIT_CONFIG || request.action==OSG_GW_COCKPIT_ACTION) {
         error=osg_gateway_config_start(&simulation.config,&simulation.gateway,&request,simulation.now);
         if(!error) {
             while(simulation.config.busy && !simulation.config.complete && !stopped) {
@@ -212,7 +214,9 @@ static void command(const char *line) {
             assert(osg_gateway_config_result(&simulation.config,&error,&json));
         }
     } else error=osg_gateway_cockpit_execute(&simulation.gateway,&request,NULL,NULL,&apply);
-    size_t n=osg_gateway_cockpit_config_response(&simulation.gateway,gateway_uid,request.id,error,json,simulation.response,sizeof simulation.response);
+    size_t n=request.action==OSG_GW_COCKPIT_ACTION ?
+        osg_gateway_cockpit_action_response(&simulation.gateway,gateway_uid,request.id,error,json,simulation.response,sizeof simulation.response) :
+        osg_gateway_cockpit_config_response(&simulation.gateway,gateway_uid,request.id,error,json,simulation.response,sizeof simulation.response);
     if(n) fputs(simulation.response,response_output);
     else fprintf(response_output,"{\"id\":%u,\"ok\":false,\"error\":\"response_overflow\",\"state\":null}\n",request.id);
     fflush(response_output);
@@ -430,9 +434,22 @@ static void serve_stdin(void) {
         if(result==OSG_LINE_TOO_LONG) {inspect(0,false,"invalid_request");return;}
     }
 }
+static bool namespace_valid(const char *name) {
+    if(!name || !*name || strlen(name)>31) return false;
+    for(const char *p=name;*p;p++) {
+        char c=*p;
+        if(!((c>='a'&&c<='z') || (c>='A'&&c<='Z') || (c>='0'&&c<='9') ||
+             c=='.' || c=='_' || c=='-')) return false;
+    }
+    return true;
+}
 static void init_local(void) {
+    const char *namespace=getenv("OSG_SIMULATION_NAMESPACE");
+    if(namespace && !namespace_valid(namespace)) {errno=EINVAL;die("Invalid simulation namespace");}
     char parent[80];snprintf(parent,sizeof parent,"/tmp/opensimgear-%lu",(unsigned long)geteuid());owned_directory(parent);
-    snprintf(local.root,sizeof local.root,"%s/gateways",parent);owned_directory(local.root);
+    int root_length=snprintf(local.root,sizeof local.root,"%s/gateways%s%s",parent,namespace ? "-":"",namespace ? namespace:"");
+    if(root_length<0 || (size_t)root_length>=sizeof local.root) {errno=ENAMETOOLONG;die("Simulation namespace path too long");}
+    owned_directory(local.root);
     snprintf(local.bus_manifest,sizeof local.bus_manifest,"%s/%s.can.json",local.root,gateway_uid);
     {
         snprintf(local.advertisement,sizeof local.advertisement,"%s/%s.json",local.root,gateway_uid);
@@ -499,6 +516,8 @@ int main(int argc,char **argv) {
         int n=snprintf(state_path,sizeof state_path,"%s/state/gateway-%s",binary,gateway_uid);
         free(binary);if(n<0 || (size_t)n>=sizeof state_path)usage(argv[0]);state_directory=state_path;
     }
+    const char *namespace=getenv("OSG_SIMULATION_NAMESPACE");
+    if(namespace && !namespace_valid(namespace)) {errno=EINVAL;die("Invalid simulation namespace");}
     make_state_directory(state_directory);lock_state();init_local();
     flash_init(&simulation.registry_flash,"registry");
     char can_uid[33];snprintf(can_uid,sizeof can_uid,"%s47575459",gateway_uid);

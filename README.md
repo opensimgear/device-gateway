@@ -45,6 +45,15 @@ STM32 cross-build validate source behavior. Physical USB/CAN acceptance remains
 pending. See the [architecture record](https://github.com/opensimgear/opensimgear.github.io/blob/main/src/content/docs/gear/architecture/usb-hid.md)
 and [GitHub project](https://github.com/orgs/opensimgear/projects/2).
 
+Cockpit also discovers and invokes device-advertised actions through the guarded
+CDC/CAN route. Descriptions, invocations and readable state reuse bounded request/reply
+fragments, with separate action dispatch and `targetAction` results. Actions remain
+reachable on online disabled controllers and direct-USB input owners after current
+lease status arrives. LED setters are volatile and do not claim settings, write flash
+or change HID descriptors. The gateway forwards action catalogues without retaining
+them in registry storage. See [milestone 1](https://github.com/opensimgear/cockpit/issues/13)
+and the [action contract](https://github.com/opensimgear/protocol/blob/main/serial/device-actions.md).
+
 ## Independent simulation
 
 From this repository, launch the native gateway:

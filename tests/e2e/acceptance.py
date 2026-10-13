@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import select
 import signal
@@ -38,11 +39,11 @@ def report_bytes(descriptor):
 
 
 class Node:
-    def __init__(self, arguments, directory, name):
+    def __init__(self, arguments, directory, name, environment=None):
         self.error_path = directory / (name + '.stderr')
         self.error = self.error_path.open('w')
         self.process = subprocess.Popen(list(map(str, arguments)), stdin=subprocess.PIPE,
-                                        stdout=subprocess.PIPE, text=True, stderr=self.error)
+                                        stdout=subprocess.PIPE, text=True, stderr=self.error, env=environment)
         self.sequence = 0
 
     def admin(self, operation):
@@ -75,9 +76,16 @@ class Node:
         assert message in self.error_path.read_text(), self.error_path.read_text()
 
 
+def simulation_directory(namespace=None):
+    if namespace is not None and re.fullmatch(r'[A-Za-z0-9._-]{1,31}', namespace) is None:
+        raise ValueError('Invalid simulation namespace')
+    suffix = '' if namespace is None else '-' + namespace
+    return Path(f'/tmp/opensimgear-{os.geteuid()}/gateways{suffix}')
+
+
 class CDC:
-    def __init__(self, uid, log):
-        self.advertisement = Path(f'/tmp/opensimgear-{os.geteuid()}/gateways/{uid}.json')
+    def __init__(self, uid, log, namespace=None):
+        self.advertisement = simulation_directory(namespace) / (uid + '.json')
         self.connection = None
         self.buffer = b''
         self.sequence = 1000
@@ -127,6 +135,23 @@ class CDC:
     def config(self, identity, boot, command, expected=None):
         return self.request(f'config {identity} {boot} {command}', expected).get('targetConfig')
 
+    def action(self, identity, boot, command, expected=None):
+        deadline = time.monotonic() + 2
+        while True:
+            self.sequence += 1
+            result = json.loads(self.line(f'cockpit {self.sequence} {self.epoch} action {identity} {boot} {command}'))
+            assert result['id'] == self.sequence
+            if result.get('state'):
+                self.epoch = result['state']['epoch']
+            # Only reads may wait for the new lease to reach the device.
+            if (expected is None and (command == 'state' or command.startswith('describe '))
+                    and result['error'] == 'configuration_route_not_ready'
+                    and time.monotonic() < deadline):
+                time.sleep(.025)
+                continue
+            assert result['error'] == expected and result['ok'] == (expected is None), result
+            return result.get('targetAction')
+
     def until(self, predicate, timeout=8):
         deadline = time.monotonic() + timeout
         latest = None
@@ -150,6 +175,8 @@ def acceptance(launch):
     artifacts.mkdir(parents=True, exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix='gateway-', dir=artifacts))
     uid = uuid.uuid4().hex[:24]
+    namespace = 'e2e-' + uuid.uuid4().hex[:24]
+    environment = {**os.environ, 'OSG_SIMULATION_NAMESPACE': namespace}
     identities = [uuid.uuid4().hex for _ in range(3)]
     definitions = []
     nodes = []
@@ -164,7 +191,7 @@ def acceptance(launch):
         path.write_text(json.dumps(definition, indent=2) + '\n')
         definitions.append((path, definition))
     def start(arguments, name):
-        node = Node(arguments, directory, name)
+        node = Node(arguments, directory, name, environment)
         nodes.append(node)
         return node
     def gateway_start(state=None, name='gateway'):
@@ -176,8 +203,8 @@ def acceptance(launch):
                       '--state-dir', state or directory / f'device-{index}-state',
                       '--output-dir', launch['deviceBuild'], '--no-build'], name or f'device-{index}')
     log = (directory / 'cdc.jsonl').open('w')
-    cdc = CDC(uid, log)
-    outcome = {'ok': False, 'gateway': uid, 'devices': identities, 'checks': events, 'launch': launch}
+    cdc = CDC(uid, log, namespace)
+    outcome = {'ok': False, 'gateway': uid, 'devices': identities, 'namespace': namespace, 'checks': events, 'launch': launch}
     try:
         devices = [device_start(0)]
         time.sleep(.15)
@@ -211,6 +238,39 @@ def acceptance(launch):
         initial_descriptor = gateway.admin('inspect')['descriptorHex']
         assert report_bytes(initial_descriptor) == initial_sizes
         passed('device-before-gateway, three independent JSON profiles and production descriptors')
+
+        # Advertised actions share guarded routing but never change settings/HID.
+        panel = identities[1]
+        panel_boot = boots[panel]
+        catalogue = cdc.action(panel, panel_boot, 'describe 0')
+        assert catalogue['ok'] and catalogue['schemaVersion'] == 1 and catalogue['next'] is None
+        actions = {item['id']: item for item in catalogue['actions']}
+        assert actions['led.rgb.set_color']['parameters'][0]['type'] == 'rgb'
+        assert actions['led.boolean.set_enabled']['parameters'][0]['type'] == 'boolean'
+        revision = catalogue['catalogueRevision']
+        settings_before = cdc.config(panel, panel_boot, 'get_active')
+        led = cdc.action(panel, panel_boot, f'invoke {revision} led.rgb.set_color A010FF')
+        assert led['ok'] and led['values'] == ['A010FF']
+        led = cdc.action(panel, panel_boot, f'invoke {revision} led.boolean.set_enabled 1')
+        assert led['ok'] and led['values'] == [True]
+        for command in (f'invoke {revision} led.rgb.set_color GG00FF',
+                        f'invoke {revision} led.boolean.set_enabled 2',
+                        f'invoke {revision + 1} led.boolean.set_enabled 0',
+                        f'invoke {revision} missing.action 0'):
+            rejected = cdc.action(panel, panel_boot, command)
+            assert rejected['ok'] is False and rejected['error'], rejected
+        state_leds = cdc.action(panel, panel_boot, 'state')
+        assert {s['id']: s['values'] for s in state_leds['states']} == {
+            'led.rgb.set_color': ['A010FF'], 'led.boolean.set_enabled': [True]}
+        assert devices[1].admin('inspect')['actions'] == state_leds
+        assert cdc.config(panel, panel_boot, 'get_active') == settings_before
+        assert gateway.admin('inspect')['descriptorHex'] == initial_descriptor
+        cdc.action(panel, panel_boot + 1, 'state', 'stale_module_boot')
+        gateway.admin('drop_reply 1')
+        cdc.action(panel, panel_boot, f'invoke {revision} led.boolean.set_enabled 0', 'configuration_timeout')
+        gateway.admin('drop_reply 0')
+        assert {s['id']: s['values'] for s in cdc.action(panel, panel_boot, 'state')['states']}['led.boolean.set_enabled'] == [False]
+        passed('advertised RGB/boolean actions, validation, applied state and lost-reply reconciliation preserve configuration and HID')
 
         identity = identities[0]
         boot = boots[identity]
@@ -336,6 +396,10 @@ def acceptance(launch):
         cdc.request('disable ' + panel)
         state = cdc.until(lambda s: not s['layoutPending'] and not module(s, panel)['published'])
         assert not module(state, panel)['enabled'] and module(state, panel)['online']
+        panel_boot = module(state, panel)['boot']
+        assert cdc.action(panel, panel_boot, 'state')['ok']
+        assert cdc.action(panel, panel_boot, f'invoke {revision} led.boolean.set_enabled 1')['values'] == [True]
+        assert cdc.action(panel, panel_boot, 'state')['ok']
         hidden_descriptor = gateway.admin('inspect')['descriptorHex']
         assert report_bytes(hidden_descriptor) == {1: 7, 3: 1}
         old_epoch = state['epoch']
@@ -362,10 +426,11 @@ def acceptance(launch):
 
         for known in identities:
             cdc.request('disable ' + known)
-        state = cdc.until(lambda s: not s['layoutPending'] and all(not m['enabled'] and not m['published'] for m in s['modules']) and module(s, identity)['hasInput'])
+        state = cdc.until(lambda s: not s['layoutPending'] and all(not m['enabled'] and not m['published'] and m['hasInput'] for m in s['modules']))
         assert gateway.admin('inspect')['descriptorHex'] == ''
         # CDC remains usable with zero HID collections, without a placeholder.
         assert cdc.config(identity, new_boot, 'get_active')['config'] == saved_config
+        assert cdc.action(panel, module(state, panel)['boot'], 'state')['ok']
         passed('zero enabled controllers has no HID descriptor and keeps configuration over CDC')
 
         cdc.close()

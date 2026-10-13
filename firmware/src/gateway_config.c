@@ -14,7 +14,7 @@ static void fail(osg_gateway_config_t *c,const char *token) {
 }
 const char *osg_gateway_config_start(osg_gateway_config_t *c,const osg_gateway_t *g,
     const osg_gateway_cockpit_request_t *r,uint32_t now) {
-    if(!c || !g || !r || !r->id || r->action!=OSG_GW_COCKPIT_CONFIG) return "invalid_request";
+    if(!c || !g || !r || !r->id || (r->action!=OSG_GW_COCKPIT_CONFIG && r->action!=OSG_GW_COCKPIT_ACTION)) return "invalid_request";
     if(c->busy) return "configuration_busy";
     if(r->epoch!=g->epoch) return "stale_epoch";
     int index=osg_gateway_find_module(g,&r->identity);
@@ -25,11 +25,15 @@ const char *osg_gateway_config_start(osg_gateway_config_t *c,const osg_gateway_t
      * device yet. Require Input/Status on it before sending a mutation once. */
     if(!m->has_sequence) return "configuration_route_not_ready";
     size_t length=strlen(r->command);
-    if(!length || length>=sizeof c->command) return "invalid_request";
-    memset(c,0,sizeof *c); memcpy(c->command,r->command,length+1);
+    bool action=r->action==OSG_GW_COCKPIT_ACTION;
+    size_t prefix=action ? 7U : 0U;
+    if(!length || length+prefix>=sizeof c->command) return "invalid_request";
+    memset(c,0,sizeof *c); c->action=action;
+    if(action) memcpy(c->command,"action ",prefix);
+    memcpy(c->command+prefix,r->command,length+1);
     c->route=(osg_gateway_message_t){.type=OSG_GW_CONFIG_REQUEST,.identity=m->identity,
         .node=m->node,.source_node=m->source_node,.boot_session=m->boot_session,.lease=m->lease,
-        .gateway_epoch=g->epoch,.sequence=r->id,.config_total=(uint16_t)length};
+        .gateway_epoch=g->epoch,.sequence=r->id,.config_total=(uint16_t)(length+prefix)};
     c->started=now; c->busy=true; return NULL;
 }
 void osg_gateway_config_tick(osg_gateway_config_t *c,const osg_gateway_t *g,osg_cyphal_t *transport,uint32_t now) {
