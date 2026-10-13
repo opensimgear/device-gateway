@@ -58,7 +58,7 @@ static bool save_registry(void) {
 }
 static void identity(void) {
     char uid[25]; board_uid_hex(uid);
-    append("gatewayType=stm32-can-gateway protocol=2 canProtocol=3 firmware=0.3.0 board=gateway_g0b1cb_rev_a identity=%s epoch=%lu maxModules=%u\r\n",
+    append("gatewayType=stm32-can-gateway protocol=2 canProtocol=3 firmware=0.3.0 board=gateway_g0b1cb_v0_1_0 identity=%s epoch=%lu maxModules=%u\r\n",
         uid,(unsigned long)gateway.epoch,OSG_GW_MAX_MODULES);
 }
 static bool cockpit_save(void *context) { (void)context; return save_registry(); }

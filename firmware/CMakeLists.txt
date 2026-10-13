@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(osg_device_gateway LANGUAGES C ASM)
-option(OSG_BUILD_BOARD "Build STM32G0B1CB Rev A firmware" OFF)
+option(OSG_BUILD_BOARD "Build STM32G0B1CB v0.1.0 firmware" OFF)
 if(NOT OSG_BUILD_BOARD)
   set(OSG_CYPHAL_BUILD_TESTS ON)
 endif()
@@ -25,8 +25,8 @@ if(NOT OSG_BUILD_BOARD)
   target_compile_options(osg_gateway_peer PRIVATE -Wall -Wextra -Werror)
   return()
 endif()
-set(OSG_BOARD "gateway_g0b1cb_rev_a" CACHE STRING "Gateway board target")
-if(NOT OSG_BOARD STREQUAL "gateway_g0b1cb_rev_a")
+set(OSG_BOARD "gateway_g0b1cb_v0_1_0" CACHE STRING "Gateway board target")
+if(NOT OSG_BOARD STREQUAL "gateway_g0b1cb_v0_1_0")
   message(FATAL_ERROR "Unknown OSG_BOARD: ${OSG_BOARD}")
 endif()
 set(OSG_USB_VID "" CACHE STRING "Authorized USB VID, decimal or 0x hex")
@@ -53,7 +53,7 @@ add_library(osg_gateway_hal STATIC
 target_include_directories(osg_gateway_hal PUBLIC include ${HAL}/Inc ${CMSIS}/Include ${OSG_CMSIS_CORE_DIR}/CMSIS/Core/Include)
 target_compile_definitions(osg_gateway_hal PUBLIC STM32G0B1xx USE_HAL_DRIVER)
 add_executable(osg_gateway src/main.c src/usb_descriptors.c
-  boards/gateway_g0b1cb_rev_a/board.c boards/gateway_g0b1cb_rev_a/storage.c
+  boards/gateway_g0b1cb_v0_1_0/board.c boards/gateway_g0b1cb_v0_1_0/storage.c
   ${CMSIS}/Source/Templates/gcc/startup_stm32g0b1xx.s)
 target_compile_definitions(osg_gateway PRIVATE OSG_USB_VID=${OSG_USB_VID} OSG_USB_PID=${OSG_USB_PID})
 target_compile_options(osg_gateway PRIVATE -Wall -Wextra -Werror)
@@ -61,7 +61,7 @@ target_link_libraries(osg_gateway PRIVATE osg_gateway_core osg_core osg_usb osg_
 foreach(target osg_gateway osg_gateway_hal osg_gateway_core osg_core osg_usb osg_tinyusb osg_cyphal)
   target_compile_options(${target} PRIVATE -Os -ffunction-sections -fdata-sections -fstack-usage)
 endforeach()
-target_link_options(osg_gateway PRIVATE -T${CMAKE_CURRENT_SOURCE_DIR}/boards/gateway_g0b1cb_rev_a/flash.ld
+target_link_options(osg_gateway PRIVATE -T${CMAKE_CURRENT_SOURCE_DIR}/boards/gateway_g0b1cb_v0_1_0/flash.ld
   -nostartfiles --specs=nano.specs --specs=nosys.specs
   -Wl,--gc-sections,-Map=${CMAKE_CURRENT_BINARY_DIR}/osg_gateway.map -Wl,--print-memory-usage)
 set_target_properties(osg_gateway PROPERTIES SUFFIX .elf)

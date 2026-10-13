@@ -3,9 +3,9 @@
 `native` builds portable gateway behavior, flash journal, actual Cyphal transport
 tests and the SocketCAN peer shared library. It needs no external source checkout.
 Native output goes to repository `.build/native`; board output to
-`.build/gateway`. `gateway` builds the STM32G0B1CB Rev A firmware and
+`.build/gateway`. `gateway` builds the STM32G0B1CB v0.1.0 firmware and
 requires an Arm GNU toolchain plus explicit authorized `OSG_USB_VID` and
-`OSG_USB_PID` values. The default firmware board is `gateway_g0b1cb_rev_a`;
+`OSG_USB_PID` values. The default firmware board is `gateway_g0b1cb_v0_1_0`;
 unknown targets fail at configure time.
 
 `common-revision.cmake` pins firmware-common to a full commit. That repository

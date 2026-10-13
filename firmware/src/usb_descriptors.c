@@ -31,7 +31,7 @@ const uint16_t *tud_descriptor_string_cb(uint8_t index,uint16_t langid) {
     if(index==0) { descriptor[0]=(TUSB_DESC_STRING<<8)|4; descriptor[1]=0x0409; return descriptor; }
     switch(index) {
         case 1: text="OpenSimGear"; break;
-        case 2: text="CAN Gateway Rev A"; break;
+        case 2: text="CAN Gateway v0.1.0"; break;
         case 3: board_uid_hex(uid); text=uid; break;
         case 4: text="Gateway Cockpit Console"; break;
         case 5: text="Registered CAN Controllers"; break;

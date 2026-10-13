@@ -1,6 +1,6 @@
 # Gateway assembly and enclosure
 
-The [Rev A gateway PCB](../electronics/boards/gateway/rev-a/README.md) is shared electronics for possible Lite/Pro enclosures. An enclosure has not been designed. Use the native board's mounting holes and exact component body/connector drawings as the mechanical source; do not infer dimensions from a copper preview or a generic RJ11 model.
+The [v0.1.0 gateway PCB](../electronics/boards/gateway/0.1.0/README.md) is shared electronics for possible Lite/Pro enclosures. An enclosure has not been designed. Use the native board's mounting holes and exact component body/connector drawings as the mechanical source; do not infer dimensions from a copper preview or a generic RJ11 model.
 
 Provide access to USB-C, both 4P4C cable latches, the 5.5 × 2.1 mm centre-positive 12 V socket, reset and the SWD header. Retain room for a removable 120 Ω endpoint plug in the unused CAN socket when the gateway is at an end. Leave clearance above the switching regulator, polarized capacitor and modular jacks, and keep screw heads away from copper and solder joints. No conductive enclosure or chassis-ground connection has been qualified.
 

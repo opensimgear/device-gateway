@@ -4,7 +4,7 @@ STM32G0B1 USB-to-CAN FD gateway with **USB-C, two parallel 4P4C powered CAN sock
 
 ## Implemented prototype
 
-- C firmware for `gateway_g0b1cb_rev_a`, with USB HID and CDC, a unique MCU-derived USB serial, and active CAN FD at 500 kbit/s arbitration / 2 Mbit/s data.
+- C firmware for `gateway_g0b1cb_v0_1_0`, with USB HID and CDC, a unique MCU-derived USB serial, and active CAN FD at 500 kbit/s arbitration / 2 Mbit/s data.
 - Discovery and logical route allocation for up to ten module identities. Permanent controller slots store each registered identity and its input profile; unplugging a module preserves its slot and emits configured neutral values.
 - One HID interface with a joystick top-level collection and stable report ID for each registered module. Each profile supports up to eight 16-bit axes, four hats and 128 buttons. Host/game interpretation of multiple collections still needs physical testing.
 - Bounded CAN queues, sequence/lease checks, direct USB input ownership, 250 ms input timeout, 1.5 s presence timeout, and bus-off recovery.
@@ -104,9 +104,9 @@ cmake --build --preset gateway
 
 ELF, BIN, HEX and MAP outputs are placed under `.build/gateway/`. No command flashes hardware automatically. See the [firmware guide](firmware/README.md) for exact dependency pins, SWD flashing, recovery and CDC commands. See [CAN peer testing](tools/README.md) for an executable matching module peer.
 
-- [PCB project, pin map and BOM](electronics/boards/gateway/rev-a/README.md)
-- [Fabrication construction](electronics/boards/gateway/rev-a/FABRICATION.md)
-- [Electrical/static validation](electronics/boards/gateway/rev-a/VALIDATION.md)
+- [PCB project, pin map and BOM](electronics/boards/gateway/0.1.0/README.md)
+- [Fabrication construction](electronics/boards/gateway/0.1.0/FABRICATION.md)
+- [Electrical/static validation](electronics/boards/gateway/0.1.0/VALIDATION.md)
 - [Firmware validation results](firmware/VALIDATION.md)
 - [CAN application framing](firmware/docs/cyphal.md)
 - [Registration, HID layout and storage semantics](firmware/docs/core.md)
@@ -118,4 +118,6 @@ Static checks and cross-compilation establish source-level behaviour. No gateway
 
 [Protocol](https://github.com/opensimgear/protocol), [firmware-common](https://github.com/opensimgear/firmware-common), [device-template](https://github.com/opensimgear/device-template), [Cockpit](https://github.com/opensimgear/cockpit), and the [website](https://github.com/opensimgear/opensimgear.github.io) own their respective shared definitions and implementations. This gateway uses pinned common firmware dependencies; a checked-in shared Cyphal snapshot tracks the canonical protocol repository.
 
-License selection for new OpenSimGear firmware and electronics remains pending. Included KiCad library data retains its [upstream license](electronics/boards/gateway/rev-a/LICENSE-KICAD.md), and firmware dependencies retain their upstream notices. No public USB VID/PID allocation is claimed.
+License selection for new OpenSimGear firmware and electronics remains pending. Included KiCad library data retains its [upstream license](electronics/boards/gateway/0.1.0/LICENSE-KICAD.md), and firmware dependencies retain their upstream notices. No public USB VID/PID allocation is claimed.
+
+PCB version **0.1.0** stays fixed while pre-live; see [PCB versioning](electronics/VERSIONING.md).

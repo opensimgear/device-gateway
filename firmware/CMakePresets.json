@@ -7,10 +7,10 @@
       "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug", "OSG_BUILD_BOARD": "OFF"}
     },
     {
-      "name": "gateway", "displayName": "STM32G0B1CB gateway Rev A",
+      "name": "gateway", "displayName": "STM32G0B1CB gateway v0.1.0",
       "generator": "Unix Makefiles", "binaryDir": "${sourceDir}/../.build/gateway",
       "toolchainFile": "${sourceDir}/cmake/arm-gcc.cmake",
-      "cacheVariables": {"CMAKE_BUILD_TYPE": "MinSizeRel", "OSG_BUILD_BOARD": "ON", "OSG_BOARD": "gateway_g0b1cb_rev_a"}
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "MinSizeRel", "OSG_BUILD_BOARD": "ON", "OSG_BOARD": "gateway_g0b1cb_v0_1_0"}
     }
   ],
   "buildPresets": [

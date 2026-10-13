@@ -1,6 +1,6 @@
 # STM32 CAN gateway firmware
 
-The Rev A target is `gateway_g0b1cb_rev_a`: STM32G0B1CBT6, USB-C device,
+The v0.1.0 target is `gateway_g0b1cb_v0_1_0`: STM32G0B1CBT6, USB-C device,
 one CAN FD controller/transceiver, two parallel **4P4C** chain jacks, and a
 center-positive 12 V barrel input. The jacks share one bus and carry
 pin 1 BUS12V, pin 2 CANH, pin 3 CANL, pin 4 GND. Moving a module between the
@@ -207,6 +207,6 @@ SRAM. Arm GCC emits `.su` stack-usage files for reviewing call paths. ST describ
 the SRAM distinction in the
 [STM32G0B1 datasheet, section 3.4](https://www.st.com/resource/en/datasheet/stm32g0b1kb.pdf).
 
-See [board wiring and bring-up](boards/gateway_g0b1cb_rev_a/README.md),
+See [board wiring and bring-up](boards/gateway_g0b1cb_v0_1_0/README.md),
 [portable behavior](docs/core.md), [CAN peer utility](../tools/README.md), and
 [validation results](VALIDATION.md).
