@@ -52,8 +52,9 @@ without network access using `python3 -m unittest discover -s tests/e2e -p 'test
 
 The gateway scenario exercises three independently launched JSON devices through
 real CDC and CAN transports, including device-before-gateway startup, profile changes,
-saved configuration, generated HID layouts, live and neutral reports, and restart
-recovery. With `--with-cockpit`, the cloned Cockpit scenario also verifies its normal
+saved configuration, automatic append and offline ghosts, generated HID layouts,
+live and neutral reports, persistent Disable/Enable, offline Forget/rediscovery,
+CDC-only empty state, save failure and restart recovery. With `--with-cockpit`, the cloned Cockpit scenario also verifies its normal
 discovery and configuration adapters against the gateway’s own build.
 
 Native simulations execute the production configuration, flash journal, Cyphal

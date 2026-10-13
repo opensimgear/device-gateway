@@ -21,6 +21,9 @@ const char *osg_gateway_config_start(osg_gateway_config_t *c,const osg_gateway_t
     if(index<0 || !g->modules[index].online) return "module_offline";
     const osg_gateway_module_t *m=&g->modules[index];
     if(r->boot!=m->boot_session) return "stale_module_boot";
+    /* A freshly renewed publication lease has not necessarily reached the
+     * device yet. Require Input/Status on it before sending a mutation once. */
+    if(!m->has_sequence) return "configuration_route_not_ready";
     size_t length=strlen(r->command);
     if(!length || length>=sizeof c->command) return "invalid_request";
     memset(c,0,sizeof *c); memcpy(c->command,r->command,length+1);

@@ -8,7 +8,9 @@ static uint8_t report_descriptor[OSG_GW_DESCRIPTOR_CAPACITY];
 static uint16_t report_descriptor_size;
 bool gateway_usb_prepare(const osg_gateway_t *gateway) {
     size_t length=osg_gateway_descriptor(gateway,report_descriptor,sizeof report_descriptor);
-    if(!length || length>UINT16_MAX) return false;
+    bool any=false;
+    for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) any|=gateway->active.slots[i].occupied && gateway->active.slots[i].enabled;
+    if((any && !length) || length>UINT16_MAX || !osg_gateway_registry_valid(&gateway->active)) return false;
     report_descriptor_size=(uint16_t)length; return true;
 }
 const uint8_t *tud_descriptor_device_cb(void) {
@@ -19,11 +21,12 @@ const uint8_t *tud_descriptor_device_cb(void) {
 const uint8_t *tud_descriptor_configuration_cb(uint8_t index) {
     if(index) return NULL;
     static uint8_t descriptor[TUD_CONFIG_DESC_LEN+TUD_CDC_DESC_LEN+TUD_HID_DESC_LEN];
-    osg_usb_hid_cdc_configuration(descriptor,sizeof descriptor,report_descriptor_size);
+    if(report_descriptor_size) osg_usb_hid_cdc_configuration(descriptor,sizeof descriptor,report_descriptor_size);
+    else osg_usb_cdc_configuration(descriptor,sizeof descriptor);
     return descriptor;
 }
 const uint8_t *tud_hid_descriptor_report_cb(uint8_t instance) {
-    return instance ? NULL : report_descriptor;
+    return instance || !report_descriptor_size ? NULL : report_descriptor;
 }
 const uint16_t *tud_descriptor_string_cb(uint8_t index,uint16_t langid) {
     (void)langid;
@@ -34,7 +37,7 @@ const uint16_t *tud_descriptor_string_cb(uint8_t index,uint16_t langid) {
         case 2: text="CAN Gateway v0.1.0"; break;
         case 3: board_uid_hex(uid); text=uid; break;
         case 4: text="Gateway Cockpit Console"; break;
-        case 5: text="Registered CAN Controllers"; break;
+        case 5: text="CAN Controllers"; break;
         default: return NULL;
     }
     size_t length=strlen(text); if(length>63) length=63;

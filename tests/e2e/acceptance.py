@@ -93,7 +93,7 @@ class CDC:
     def connect(self):
         self.close()
         advertisement = json.loads(self.advertisement.read_text())
-        assert advertisement['protocol'] == 2 and advertisement['role'] == 'gateway'
+        assert advertisement['protocol'] == 3 and advertisement['role'] == 'gateway'
         port = advertisement['tcpPort']
         assert isinstance(port, int) and 0 < port <= 65535
         self.connection = socket.create_connection(('127.0.0.1', port), timeout=6)
@@ -187,8 +187,15 @@ def acceptance(launch):
         state = cdc.until(lambda s: len(s['modules']) == 1 and s['modules'][0]['online'])
         assert state['modules'][0]['identity'] == identities[0]
         assert f'identity={uid}' in cdc.line('identity')
-        devices += [device_start(1), device_start(2)]
-        state = cdc.until(lambda s: len(s['modules']) == 3 and all(m['online'] for m in s['modules']))
+        state = cdc.until(lambda s: s['modules'][0]['published'] and not s['layoutPending'])
+        first_descriptor = gateway.admin('inspect')['descriptorHex']
+        devices.append(device_start(1))
+        cdc.until(lambda s: len(s['modules']) == 2 and all(m['published'] for m in s['modules']) and not s['layoutPending'])
+        second_descriptor = gateway.admin('inspect')['descriptorHex']
+        assert second_descriptor.startswith(first_descriptor)
+        devices.append(device_start(2))
+        state = cdc.until(lambda s: len(s['modules']) == 3 and not s['layoutPending'] and
+                          all(m['online'] and m['published'] and m['hasInput'] for m in s['modules']))
         assert len({m['sourceNode'] for m in state['modules']}) == 3
         boots = {m['identity']: m['boot'] for m in state['modules']}
         initial_sizes = {}
@@ -199,10 +206,8 @@ def acceptance(launch):
             assert len(active['config']['buttons']) == len(definitions[index][1]['inputs'].get('buttons', []))
             assert active['generation'] == active['savedGeneration'] == 1
             initial_sizes[index + 1] = active['layout']['reportBytes']
-            cdc.request('register ' + identity)
         assert initial_sizes == {1: 6, 2: 3, 3: 1}, initial_sizes
-        cdc.request('apply')
-        cdc.until(lambda s: s['running'] and not s['needsApply'])
+        cdc.until(lambda s: s['running'] and not s['layoutPending'] and all(m['published'] for m in s['modules']))
         initial_descriptor = gateway.admin('inspect')['descriptorHex']
         assert report_bytes(initial_descriptor) == initial_sizes
         passed('device-before-gateway, three independent JSON profiles and production descriptors')
@@ -227,21 +232,22 @@ def acceptance(launch):
         assert gateway.admin('inspect')['descriptorHex'] == initial_descriptor
         cdc.config(identity, boot, f'axis {writer} 1 1 49 3000 100 32768 0 0', 'invalid_axis')
         cdc.config(identity, boot, f'apply_save {writer}')
-        state = cdc.until(lambda s: module(s, identity)['configurationGeneration'] == 2 and s['needsApply'])
+        state = cdc.until(lambda s: module(s, identity)['configurationGeneration'] == 2 and
+                          module(s, identity)['hasInput'] and not module(s, identity)['profileMatch'])
         assert not module(state, identity)['profileMatch']
         active = cdc.config(identity, boot, 'get_active')
         saved_config = active['config']
         assert saved_config['name'] == name and active['generation'] == active['savedGeneration'] == 2
         assert report_bytes(active['descriptorHex']) == {0: 7}
         gateway.admin('fault 0')
-        cdc.request('apply', 'flash_save_failed')
-        assert gateway.admin('inspect')['descriptorHex'] == initial_descriptor
-        cdc.request('apply')
-        state = cdc.until(lambda s: s['running'] and not s['needsApply'] and module(s, identity)['profileMatch'])
+        cdc.request('update-profile ' + identity)
+        failed = cdc.until(lambda s: s['layoutError'] == 'flash_save_failed')
+        assert failed['layoutPending'] and gateway.admin('inspect')['descriptorHex'] == initial_descriptor
+        state = cdc.until(lambda s: s['running'] and not s['layoutPending'] and module(s, identity)['profileMatch'])
         descriptor = gateway.admin('inspect')['descriptorHex']
         assert report_bytes(descriptor) == {1: 7, 2: 3, 3: 1}
         assert descriptor != initial_descriptor
-        passed('routed configuration ownership, Unicode name/save, shape change and interrupted gateway apply')
+        passed('routed configuration ownership, Unicode name/save, shape change and interrupted automatic gateway save')
 
         cdc.config(identity, boot, f'name {writer} {b"Must not survive a failed save".hex()}')
         devices[0].admin('fault 0')
@@ -269,7 +275,7 @@ def acceptance(launch):
         for index, device in enumerate(devices):
             assert device.admin('inspect')['moduleReportHex'] == module(state, identities[index])['report']
         assert gateway.admin('inspect')['gatewayReports'][0]['hex'] == report.hex()
-        passed('calibrated/inverted axes, buttons and hats reach all registered controller reports')
+        passed('calibrated/inverted axes, buttons and hats reach all automatically enrolled controller reports')
 
         devices[0].admin('can_node ' + str(module(state, identities[1])['sourceNode']))
         state = cdc.until(lambda s: all(m['online'] and m['hasInput'] for m in s['modules']) and
@@ -304,12 +310,12 @@ def acceptance(launch):
         devices[0].stop(abrupt=True)
         state = cdc.until(lambda s: not module(s, identity)['online'])
         offline = module(state, identity)
-        assert not offline['hasInput'] and offline['activeSlot'] == 0
+        assert not offline['hasInput'] and offline['descriptorIndex'] == 0 and offline['published']
         assert bytes.fromhex(offline['report']) == b'\x00\x00\x08\x00\x00\x00\x80', offline
         assert sum(m['online'] for m in state['modules']) == 2
         devices[0] = device_start(0, name='device-0-restarted')
         state = cdc.until(lambda s: module(s, identity)['online'] and module(s, identity)['boot'] > boot and
-                          module(s, identity)['profileMatch'])
+                          module(s, identity)['profileMatch'] and module(s, identity)['hasInput'])
         new_boot = module(state, identity)['boot']
         cdc.config(identity, boot, 'get_active', 'stale_module_boot')
         restored = cdc.config(identity, new_boot, 'get_active')
@@ -320,10 +326,47 @@ def acceptance(launch):
         gateway = gateway_start(name='gateway-restarted')
         state = cdc.until(lambda s: s['epoch'] > old_epoch and len(s['modules']) == 3 and
                           all(m['online'] and m['profileMatch'] for m in s['modules']))
-        assert not state['needsApply'] and {m['activeSlot'] for m in state['modules']} == {0, 1, 2}
+        assert not state['layoutPending'] and {m['descriptorIndex'] for m in state['modules']} == {0, 1, 2}
         assert report_bytes(gateway.admin('inspect')['descriptorHex']) == {1: 7, 2: 3, 3: 1}
         assert cdc.config(identity, new_boot, 'get_active')['config'] == saved_config
         passed('offline neutral reports, device boot/save recovery and gateway epoch/registry recovery')
+
+        # Disable is a persisted choice, even while the module keeps announcing.
+        panel = identities[1]
+        cdc.request('disable ' + panel)
+        state = cdc.until(lambda s: not s['layoutPending'] and not module(s, panel)['published'])
+        assert not module(state, panel)['enabled'] and module(state, panel)['online']
+        hidden_descriptor = gateway.admin('inspect')['descriptorHex']
+        assert report_bytes(hidden_descriptor) == {1: 7, 3: 1}
+        old_epoch = state['epoch']
+        gateway.stop(abrupt=True); cdc.close(); gateway = gateway_start(name='gateway-disabled-restarted')
+        state = cdc.until(lambda s: s['epoch'] > old_epoch and all(m['online'] for m in s['modules']) and not s['layoutPending'])
+        assert not module(state, panel)['enabled'] and not module(state, panel)['published']
+        assert gateway.admin('inspect')['descriptorHex'] == hidden_descriptor
+        cdc.request('enable ' + panel)
+        state = cdc.until(lambda s: not s['layoutPending'] and module(s, panel)['published'])
+        assert module(state, panel)['descriptorIndex'] == 2 and module(state, panel)['reportId'] == 2
+        assert gateway.admin('inspect')['descriptorHex'].startswith(hidden_descriptor)
+        passed('persistent disable survives announcements/restart; re-enable appends after surviving collections')
+
+        cdc.request('forget ' + panel, 'device_online')
+        devices[1].stop(abrupt=True)
+        state = cdc.until(lambda s: not module(s, panel)['online'])
+        assert module(state, panel)['published']
+        cdc.request('forget ' + panel)
+        cdc.until(lambda s: not s['layoutPending'] and all(m['identity'] != panel for m in s['modules']))
+        devices[1] = device_start(1, name='device-panel-forgotten-restarted')
+        state = cdc.until(lambda s: any(m['identity'] == panel and m['published'] for m in s['modules']) and not s['layoutPending'])
+        assert module(state, panel)['descriptorIndex'] == 2
+        passed('offline forget removes a ghost; rediscovery enrolls automatically at the end')
+
+        for known in identities:
+            cdc.request('disable ' + known)
+        state = cdc.until(lambda s: not s['layoutPending'] and all(not m['enabled'] and not m['published'] for m in s['modules']) and module(s, identity)['hasInput'])
+        assert gateway.admin('inspect')['descriptorHex'] == ''
+        # CDC remains usable with zero HID collections, without a placeholder.
+        assert cdc.config(identity, new_boot, 'get_active')['config'] == saved_config
+        passed('zero enabled controllers has no HID descriptor and keeps configuration over CDC')
 
         cdc.close()
         time.sleep(.1)

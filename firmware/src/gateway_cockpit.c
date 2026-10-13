@@ -21,8 +21,6 @@ bool osg_gateway_cockpit_parse(const char *line,osg_gateway_cockpit_request_t *o
     if(!number(&p,&out->id) || *p++!=' ') return false;
     if(!strcmp(p,"snapshot")) { out->action=OSG_GW_COCKPIT_SNAPSHOT; return true; }
     if(!number(&p,&out->epoch) || !out->epoch || *p++!=' ') return false;
-    if(!strcmp(p,"save")) { out->action=OSG_GW_COCKPIT_SAVE; return true; }
-    if(!strcmp(p,"apply")) { out->action=OSG_GW_COCKPIT_APPLY; return true; }
     if(!strncmp(p,"config ",7)) {
         out->action=OSG_GW_COCKPIT_CONFIG; p+=7;
         if(strlen(p)<35 || p[32]!=' ') return false;
@@ -35,26 +33,34 @@ bool osg_gateway_cockpit_parse(const char *line,osg_gateway_cockpit_request_t *o
         for(size_t i=0;i<length;i++) if((unsigned char)p[i]<32 || (unsigned char)p[i]>126) return false;
         memcpy(out->command,p,length+1); return true;
     }
-    if(!strncmp(p,"register ",9)) { out->action=OSG_GW_COCKPIT_REGISTER; p+=9; }
-    else if(!strncmp(p,"unregister ",11)) { out->action=OSG_GW_COCKPIT_UNREGISTER; p+=11; }
+    if(!strncmp(p,"enable ",7)) { out->action=OSG_GW_COCKPIT_ENABLE; p+=7; }
+    else if(!strncmp(p,"disable ",8)) { out->action=OSG_GW_COCKPIT_DISABLE; p+=8; }
+    else if(!strncmp(p,"forget ",7)) { out->action=OSG_GW_COCKPIT_FORGET; p+=7; }
+    else if(!strncmp(p,"update-profile ",15)) { out->action=OSG_GW_COCKPIT_UPDATE_PROFILE; p+=15; }
     else return false;
     return osg_gateway_identity_parse(p,&out->identity);
 }
 const char *osg_gateway_cockpit_execute(osg_gateway_t *g,const osg_gateway_cockpit_request_t *r,
                                       bool (*persist)(void *),void *context,bool *apply) {
+    (void)persist; (void)context;
     if(!apply) return "invalid_request";
     *apply=false;
-    if(!g || !r || r->action>OSG_GW_COCKPIT_APPLY) return "invalid_request";
+    if(!g || !r) return "invalid_request";
     if(r->action==OSG_GW_COCKPIT_SNAPSHOT) return NULL;
     if(r->epoch!=g->epoch) return "stale_epoch";
-    if(r->action==OSG_GW_COCKPIT_REGISTER || r->action==OSG_GW_COCKPIT_UNREGISTER) {
-        bool ok=r->action==OSG_GW_COCKPIT_REGISTER ? osg_gateway_register(g,&r->identity) : osg_gateway_unregister(g,&r->identity);
-        return ok?NULL:"registration_rejected";
+    bool ok=false;
+    switch(r->action) {
+        case OSG_GW_COCKPIT_ENABLE: ok=osg_gateway_enable(g,&r->identity); break;
+        case OSG_GW_COCKPIT_DISABLE: ok=osg_gateway_disable(g,&r->identity); break;
+        case OSG_GW_COCKPIT_FORGET: {
+            int module=osg_gateway_find_module(g,&r->identity);
+            if(module>=0 && g->modules[module].online) return "device_online";
+            ok=osg_gateway_forget(g,&r->identity); break;
+        }
+        case OSG_GW_COCKPIT_UPDATE_PROFILE: ok=osg_gateway_update_profile(g,&r->identity); break;
+        default: return "invalid_request";
     }
-    if(r->action==OSG_GW_COCKPIT_APPLY && !osg_gateway_needs_apply(g)) return NULL;
-    if(!persist || !persist(context)) return "flash_save_failed";
-    *apply=r->action==OSG_GW_COCKPIT_APPLY;
-    return NULL;
+    return ok?NULL:"lifecycle_rejected";
 }
 typedef struct { char *out; size_t capacity,length; bool valid; } writer_t;
 static void append(writer_t *w,const char *format,...) {
@@ -77,17 +83,30 @@ size_t osg_gateway_cockpit_config_response(const osg_gateway_t *g,const char uid
     writer_t w={.out=out,.capacity=capacity,.valid=true};
     append(&w,"{\"id\":%lu,\"ok\":%s,\"error\":",(unsigned long)id,boolean(!error));
     if(error) append(&w,"\"%s\"",error); else append(&w,"null");
-    append(&w,",\"state\":{\"gatewayType\":\"stm32-can-gateway\",\"protocol\":2,\"canProtocol\":3,\"firmware\":\"0.3.0\",\"identity\":\"%s\",\"epoch\":%lu,\"running\":%s,\"needsApply\":%s,\"maxModules\":10,\"modules\":[",
-        uid,(unsigned long)g->epoch,boolean(g->running),boolean(osg_gateway_needs_apply(g)));
+    append(&w,",\"state\":{\"gatewayType\":\"stm32-can-gateway\",\"protocol\":3,\"canProtocol\":3,\"firmware\":\"0.4.0\",\"identity\":\"%s\",\"epoch\":%lu,\"running\":%s,\"lifecycle\":\"automatic\",\"layoutPending\":%s,\"layoutError\":",
+        uid,(unsigned long)g->epoch,boolean(g->running),boolean(osg_gateway_needs_apply(g) || g->layout_transition));
+    if(g->layout_error) append(&w,"\"%s\"",g->layout_error); else append(&w,"null");
+    append(&w,",\"maxModules\":%u,\"maxRemembered\":%u,\"maxControllers\":%u,\"activeGeneration\":%lu,\"pendingGeneration\":%lu,\"rejectedAnnouncements\":%lu,\"lastRejectedIdentity\":",
+        OSG_GW_MAX_MODULES,OSG_GW_MAX_MODULES,OSG_GW_MAX_MODULES,(unsigned long)g->active.generation,
+        (unsigned long)g->pending.generation,(unsigned long)g->rejected_announcements);
+    char rejected[33]; osg_gateway_identity_format(&g->rejected_identity,rejected);
+    if(g->admission_error) append(&w,"\"%s\"",rejected); else append(&w,"null");
+    append(&w,",\"admissionError\":");
+    if(g->admission_error) append(&w,"\"%s\"",g->admission_error); else append(&w,"null");
+    append(&w,",\"admissionFailure\":");
+    if(g->admission_error) append(&w,"{\"identity\":\"%s\",\"error\":\"%s\"}",rejected,g->admission_error);
+    else append(&w,"null");
+    append(&w,",\"modules\":[");
     bool first=true;
     for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) {
         const osg_gateway_module_t *m=&g->modules[i];
         if(!m->occupied) continue;
         int pending=osg_gateway_find_slot(&g->pending,&m->identity),active=osg_gateway_find_slot(&g->active,&m->identity);
-        bool match=active>=0 && osg_gateway_profile_equal(&m->profile,&g->active.slots[active].profile);
-        bool pending_match=pending>=0 && osg_gateway_profile_equal(&m->profile,&g->pending.slots[pending].profile);
+        bool published=active>=0 && g->active.slots[active].enabled;
+        bool enabled=pending>=0 && g->pending.slots[pending].enabled;
+        bool match=published && osg_gateway_profile_equal(&m->profile,&g->active.slots[active].profile);
         uint8_t report[OSG_GW_MAX_REPORT_SIZE]; osg_gateway_profile_neutral(&m->profile,report);
-        if(match && g->running && m->online && !m->direct_usb && m->has_input) memcpy(report,m->report,sizeof report);
+        if(enabled && match && g->running && m->online && !m->direct_usb && m->has_input) memcpy(report,m->report,sizeof report);
         char identity[33]; osg_gateway_identity_format(&m->identity,identity);
         append(&w,"%s{\"identity\":\"%s\",\"online\":%s,\"directUsb\":%s,\"node\":%u,\"sourceNode\":%u,\"boot\":%lu,\"configurationGeneration\":%lu,\"lease\":%lu,\"profile\":{\"buttons\":%u,\"axes\":%u,\"hats\":%u,\"revision\":%u,\"axisUsage\":[",
             first?"":",",identity,boolean(m->online),boolean(m->direct_usb),m->node,m->source_node,(unsigned long)m->boot_session,(unsigned long)m->configuration_generation,(unsigned long)m->lease,
@@ -95,7 +114,9 @@ size_t osg_gateway_cockpit_config_response(const osg_gateway_t *g,const char uid
         for(unsigned axis=0;axis<m->profile.axis_count;axis++) append(&w,"%s%u",axis?",":"",m->profile.axis_usage[axis]);
         append(&w,"],\"neutral\":[");
         for(unsigned axis=0;axis<m->profile.axis_count;axis++) append(&w,"%s%u",axis?",":"",m->profile.axis_neutral[axis]);
-        append(&w,"]},\"pendingSlot\":%d,\"activeSlot\":%d,\"profileMatch\":%s,\"pendingProfileMatch\":%s,\"hasInput\":%s,\"report\":\"",pending,active,boolean(match),boolean(pending_match),boolean(m->has_input));
+        append(&w,"]},\"enabled\":%s,\"published\":%s,\"descriptorIndex\":%d,\"reportId\":",boolean(enabled),boolean(published),published?g->active.slots[active].order:-1);
+        if(published) append(&w,"%u",g->active.slots[active].report_id); else append(&w,"null");
+        append(&w,",\"profileMatch\":%s,\"hasInput\":%s,\"report\":\"",boolean(match),boolean(m->has_input));
         size_t length=osg_gateway_profile_report_size(&m->profile);
         for(size_t byte=0;byte<length;byte++) append(&w,"%02x",report[byte]);
         append(&w,"\"}"); first=false;

@@ -2,7 +2,7 @@
 #define OSG_GATEWAY_H
 #include "opensimgear/gateway_registry.h"
 enum { OSG_GW_INPUT_TIMEOUT_MS=250, OSG_GW_OFFLINE_TIMEOUT_MS=1500,
-       OSG_GW_DESCRIPTOR_CAPACITY=1536 };
+       OSG_GW_DESCRIPTOR_CAPACITY=4096 };
 typedef struct {
     bool occupied, online, direct_usb, has_input, has_sequence;
     osg_gateway_identity_t identity;
@@ -15,11 +15,21 @@ typedef struct {
 typedef struct {
     osg_gateway_module_t modules[OSG_GW_MAX_MODULES];
     osg_gateway_registry_t pending, active;
-    uint32_t epoch, lease_counter;
-    bool running;
+    uint32_t epoch, lease_counter, reserved_leases;
+    bool running, layout_transition;
     uint64_t run_generation;
-    uint32_t accepted_frames, rejected_frames;
+    uint32_t accepted_frames, rejected_frames, rejected_announcements;
+    osg_gateway_identity_t rejected_identity;
+    const char *admission_error, *layout_error;
 } osg_gateway_t;
+/* Reserve capacity, not numeric leases: later assignments must remain monotonic.
+ * Each identity whose published visibility changes receives a fresh lease at
+ * publication, including one reserved for an identity that is currently offline. */
+typedef struct {
+    osg_gateway_identity_t identities[OSG_GW_MAX_MODULES];
+    uint8_t count;
+    bool reserved;
+} osg_gateway_activation_t;
 /* Immutable snapshot of an eligible input submitted to the USB interrupt endpoint. */
 typedef struct {
     bool valid;
@@ -42,14 +52,26 @@ osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *, const osg_gate
                                                 uint32_t now, osg_gateway_message_t *reply);
 int osg_gateway_find_module(const osg_gateway_t *, const osg_gateway_identity_t *);
 int osg_gateway_find_slot(const osg_gateway_registry_t *, const osg_gateway_identity_t *);
+bool osg_gateway_enable(osg_gateway_t *, const osg_gateway_identity_t *);
+bool osg_gateway_disable(osg_gateway_t *, const osg_gateway_identity_t *);
+bool osg_gateway_forget(osg_gateway_t *, const osg_gateway_identity_t *);
+bool osg_gateway_update_profile(osg_gateway_t *, const osg_gateway_identity_t *);
+/* Compatibility helpers for portable callers; never exposed as CDC3 commands. */
 bool osg_gateway_register(osg_gateway_t *, const osg_gateway_identity_t *);
 bool osg_gateway_unregister(osg_gateway_t *, const osg_gateway_identity_t *);
 bool osg_gateway_needs_apply(const osg_gateway_t *);
 /* Call only after persistent save succeeds and USB has disconnected. */
 void osg_gateway_apply_layout(osg_gateway_t *);
-/* Active slot indexes are stable; HID report ID is slot+1. Returns0 for empty. */
+bool osg_gateway_activation_prepare(const osg_gateway_t *, const osg_gateway_registry_t *, osg_gateway_activation_t *);
+bool osg_gateway_activation_reserve(osg_gateway_t *, osg_gateway_activation_t *);
+bool osg_gateway_activate_prepared(osg_gateway_t *, const osg_gateway_registry_t *, bool stop_input, osg_gateway_activation_t *);
+bool osg_gateway_activate(osg_gateway_t *, const osg_gateway_registry_t *, bool stop_input);
+int osg_gateway_descriptor_index(const osg_gateway_registry_t *, const osg_gateway_identity_t *);
+bool osg_gateway_layout_equal(const osg_gateway_registry_t *, const osg_gateway_registry_t *);
+/* The index addresses a remembered record; its report ID/order are independent. */
 size_t osg_gateway_report(const osg_gateway_t *, unsigned slot, uint8_t *, size_t);
 size_t osg_gateway_descriptor(const osg_gateway_t *, uint8_t *, size_t);
+size_t osg_gateway_registry_descriptor(const osg_gateway_registry_t *, uint8_t *, size_t);
 /* Neutral fallback reports remain deliverable, but never qualify for a CAN ACK. */
 size_t osg_gateway_delivery_prepare(const osg_gateway_t *, unsigned slot, uint8_t *, size_t, osg_gateway_delivery_t *);
 /* Invoke only from a successful USB interrupt completion. delivered includes its report ID. */

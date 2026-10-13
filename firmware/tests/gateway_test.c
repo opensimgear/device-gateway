@@ -61,6 +61,8 @@ static void lifecycle_test(void) {
     assert(!g.active.slots[0].occupied);
     osg_gateway_apply_layout(&g); assert(!osg_gateway_needs_apply(&g));
     assert(osg_gateway_find_slot(&g.active,&id)==0); check_report(&g,0,false);
+    assert(receive(&g,&in,1,NULL)==OSG_GW_RX_REJECTED); /* Publication rejects the discovery lease. */
+    a=discover(&g,1,1); in=input(a,1);
     assert(receive(&g,&in,1,NULL)==OSG_GW_RX_ACCEPTED); check_report(&g,0,false);
     osg_gateway_set_running(&g,true); check_report(&g,0,false);
     assert(receive(&g,&in,2,NULL)==OSG_GW_RX_REJECTED); /* pre-start replay */
@@ -93,12 +95,14 @@ static void lifecycle_test(void) {
 static void bounds_and_wrap_test(void) {
     osg_gateway_t g; assert(osg_gateway_init(&g,0x20000,NULL));
     osg_gateway_message_t reply;
-    for(unsigned i=1;i<=10;i++) {
+    for(unsigned i=1;i<=OSG_GW_MAX_MODULES;i++) {
         osg_gateway_message_t a=discover(&g,i,0xfffffff0U); assert(a.node==i);
         osg_gateway_identity_t id=identity(i); assert(osg_gateway_register(&g,&id));
     }
-    osg_gateway_message_t eleventh=announce(11);
+    osg_gateway_message_t eleventh=announce(OSG_GW_MAX_MODULES+1);
     assert(receive(&g,&eleventh,0xfffffff1U,&reply)==OSG_GW_RX_FULL);
+    assert(g.rejected_announcements==1 && !strcmp(g.admission_error,"capacity_exceeded"));
+    assert(osg_gateway_identity_equal(&g.rejected_identity,&eleventh.identity));
     osg_gateway_apply_layout(&g); osg_gateway_set_running(&g,true);
     osg_gateway_message_t a=discover(&g,1,0xfffffff2U),in=input(a,0xfffffffeU);
     assert(receive(&g,&in,0xfffffff3U,NULL)==OSG_GW_RX_ACCEPTED);
@@ -108,7 +112,7 @@ static void bounds_and_wrap_test(void) {
     osg_gateway_tick(&g,0x20); check_report(&g,0,true);
     osg_gateway_tick(&g,0xef); check_report(&g,0,false);
     osg_gateway_tick(&g,0x5dc); assert(!g.modules[0].online);
-    assert(receive(&g,&eleventh,0x5dd,&reply)==OSG_GW_RX_FULL); /* registered offline reserves identity */
+    assert(receive(&g,&eleventh,0x5dd,&reply)==OSG_GW_RX_FULL); /* retained offline records reserve capacity */
     osg_gateway_identity_t removed=identity(2); assert(osg_gateway_unregister(&g,&removed));
     assert(receive(&g,&eleventh,0x5de,&reply)==OSG_GW_RX_FULL); /* active layout still reserves it */
     osg_gateway_apply_layout(&g); assert(receive(&g,&eleventh,0x5df,&reply)==OSG_GW_RX_ASSIGNMENT);
@@ -119,32 +123,34 @@ static void bounds_and_wrap_test(void) {
 }
 static void registry_test(void) {
     osg_gateway_registry_t r={.generation=0xffffffffU},decoded;
-    r.slots[2]=(osg_gateway_slot_t){.occupied=true,.identity=identity(7),.profile=profile()};
-    uint8_t record[500],next[500],partial[500];
-    assert(osg_gateway_registry_encode(&r,record,sizeof record)==500);
+    r.slots[2]=(osg_gateway_slot_t){.occupied=true,.enabled=true,.report_id=3,.order=0,.identity=identity(7),.profile=profile()};
+    uint8_t record[OSG_GW_REGISTRY_RECORD_SIZE],next[OSG_GW_REGISTRY_RECORD_SIZE],partial[OSG_GW_REGISTRY_RECORD_SIZE];
+    assert(osg_gateway_registry_encode(&r,record,sizeof record)==sizeof record);
     assert(osg_gateway_registry_decode(record,sizeof record,&decoded));
-    assert(decoded.slots[2].occupied && !decoded.slots[0].occupied);
-    /* Preserve the exact 500-byte v1 record, then write the upgraded format. */
-    uint8_t legacy[500]; memcpy(legacy,record,sizeof legacy); legacy[4]=1;
+    assert(decoded.slots[2].occupied && decoded.slots[2].report_id==3 && !decoded.slots[0].occupied);
+    /* Legacy sparse record: descriptor order is compacted, report ID retained. */
+    uint8_t legacy[500]={0}; memcpy(legacy,record,16); legacy[4]=2; legacy[6]=10;
+    legacy[12]=0xf4; legacy[13]=1; memcpy(legacy+16+48*2,record+16+48*2,48);
+    legacy[16+48*2]=1; legacy[16+48*2+46]=legacy[16+48*2+47]=0;
     uint32_t crc=osg_gateway_crc32(legacy,496);
     for(unsigned i=0;i<4;i++) legacy[496+i]=(uint8_t)(crc>>(8*i));
-    assert(osg_gateway_registry_decode(legacy,sizeof legacy,&decoded) && !decoded.slots[2].profile.hat_count);
-    assert(osg_gateway_registry_encode(&decoded,legacy,sizeof legacy)==500 && legacy[4]==2);
-    r.slots[2].profile.hat_count=3;
-    assert(osg_gateway_registry_encode(&r,legacy,sizeof legacy)==500);
-    assert(osg_gateway_registry_decode(legacy,sizeof legacy,&decoded) && decoded.slots[2].profile.hat_count==3);
+    assert(osg_gateway_registry_decode(legacy,sizeof legacy,&decoded));
+    assert(decoded.slots[0].enabled && decoded.slots[0].report_id==3 && decoded.slots[0].order==0);
     legacy[4]=1; crc=osg_gateway_crc32(legacy,496);
     for(unsigned i=0;i<4;i++) legacy[496+i]=(uint8_t)(crc>>(8*i));
+    assert(osg_gateway_registry_decode(legacy,sizeof legacy,&decoded));
+    assert(osg_gateway_registry_encode(&decoded,next,sizeof next)==sizeof next && next[4]==3);
+    legacy[16+48*2+3]=3; crc=osg_gateway_crc32(legacy,496);
+    for(unsigned i=0;i<4;i++) legacy[496+i]=(uint8_t)(crc>>(8*i));
     assert(!osg_gateway_registry_decode(legacy,sizeof legacy,&decoded));
-    r.slots[2].profile.hat_count=0;
-    r.generation=0; assert(osg_gateway_registry_encode(&r,next,sizeof next)==500);
-    assert(osg_gateway_registry_select(record,500,next,500,&decoded)==1 && decoded.generation==0);
-    for(unsigned i=0;i<500;i++) {
-        memcpy(partial,next,500); partial[i]^=1;
-        assert(!osg_gateway_registry_decode(partial,500,&decoded));
-        assert(osg_gateway_registry_select(record,500,partial,500,&decoded)==0);
-        memset(partial,0xff,500); memcpy(partial,next,i); /* interrupted inactive write */
-        assert(osg_gateway_registry_select(record,500,partial,500,&decoded)==0);
+    r.generation=0; assert(osg_gateway_registry_encode(&r,next,sizeof next)==sizeof next);
+    assert(osg_gateway_registry_select(record,sizeof record,next,sizeof next,&decoded)==1 && decoded.generation==0);
+    for(unsigned i=0;i<sizeof record;i++) {
+        memcpy(partial,next,sizeof partial); partial[i]^=1;
+        assert(!osg_gateway_registry_decode(partial,sizeof partial,&decoded));
+        assert(osg_gateway_registry_select(record,sizeof record,partial,sizeof partial,&decoded)==0);
+        memset(partial,0xff,sizeof partial); memcpy(partial,next,i);
+        assert(osg_gateway_registry_select(record,sizeof record,partial,sizeof partial,&decoded)==0);
     }
     assert(osg_gateway_registry_select(NULL,0,NULL,0,&decoded)==-1);
     r.slots[4]=r.slots[2]; assert(!osg_gateway_registry_valid(&r));
@@ -155,7 +161,7 @@ static void registry_test(void) {
 static void descriptor_test(void) {
     osg_gateway_t g; assert(osg_gateway_init(&g,0x50000,NULL));
     uint8_t before[1024],after[1024]; size_t empty=osg_gateway_descriptor(&g,before,sizeof before);
-    assert(empty && before[0]==0x06); /* vendor, no joystick before registration */
+    assert(!empty); /* CDC-only, no HID collection before first enrollment */
     for(unsigned i=1;i<=10;i++) {
         discover(&g,i,i); osg_gateway_identity_t id=identity(i); assert(osg_gateway_register(&g,&id));
     }
@@ -192,22 +198,22 @@ static osg_gateway_profile_t maximum_profile(void) {
 }
 static void maximum_profile_test(void) {
     osg_gateway_registry_t r={0};
-    for(unsigned i=0;i<10;i++) r.slots[i]=(osg_gateway_slot_t){.occupied=true,.identity=identity(i+1),.profile=maximum_profile()};
+    for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) r.slots[i]=(osg_gateway_slot_t){.occupied=true,.enabled=true,.report_id=(uint8_t)(i+1),.order=(uint8_t)i,.identity=identity(i+1),.profile=maximum_profile()};
     osg_gateway_t g; assert(osg_gateway_init(&g,0x60000,&r));
     uint8_t descriptor[OSG_GW_DESCRIPTOR_CAPACITY],report[OSG_GW_MAX_REPORT_SIZE];
     size_t length=osg_gateway_descriptor(&g,descriptor,sizeof descriptor); assert(length && length<=sizeof descriptor);
-    unsigned bit_count[11]={0},item_size=0,item_count=0,report_id=0;
+    unsigned bit_count[OSG_GW_MAX_MODULES+1]={0},item_size=0,item_count=0,report_id=0;
     for(size_t i=0;i<length;) {
         uint8_t item=descriptor[i++]; unsigned bytes=item&3; if(bytes==3) bytes=4;
         assert(item!=0xfe && i+bytes<=length); uint32_t value=0;
         for(unsigned j=0;j<bytes;j++) value|=(uint32_t)descriptor[i+j]<<(8*j);
-        if(item==0x85) { report_id=value; assert(report_id>=1 && report_id<=10); }
+        if(item==0x85) { report_id=value; assert(report_id>=1 && report_id<=OSG_GW_MAX_MODULES); }
         if(item==0x75) item_size=value;
         if(item==0x95) item_count=value;
         if((item&0xfc)==0x80) bit_count[report_id]+=item_size*item_count;
         i+=bytes;
     }
-    for(unsigned i=1;i<=10;i++) assert(bit_count[i]==34*8);
+    for(unsigned i=1;i<=OSG_GW_MAX_MODULES;i++) assert(bit_count[i]==34*8);
     osg_gateway_message_t msg=announce(1); msg.profile=r.slots[0].profile;
     osg_gateway_message_t assignment; assert(receive(&g,&msg,0,&assignment)==OSG_GW_RX_ASSIGNMENT);
     msg=assignment; msg.source_node=21;
@@ -249,6 +255,7 @@ static void delivery_test(void) {
     osg_gateway_message_t assignment=discover(&g,1,0),in=input(assignment,1);
     osg_gateway_identity_t id=identity(1); assert(osg_gateway_register(&g,&id));
     osg_gateway_apply_layout(&g); osg_gateway_set_running(&g,true);
+    assignment=discover(&g,1,0); in=input(assignment,1);
     uint8_t wire[OSG_GW_MAX_REPORT_SIZE+1]={1}; osg_gateway_delivery_t d;
     osg_gateway_message_t ack; osg_gateway_message_t decoded;
     assert(osg_gateway_delivery_prepare(&g,0,wire+1,sizeof wire-1,&d)==5 && !d.valid);
@@ -297,6 +304,7 @@ static void transport_source_test(void) {
     assignment.source_node=97;
     osg_gateway_identity_t id=identity(1); assert(osg_gateway_register(&g,&id));
     osg_gateway_apply_layout(&g); osg_gateway_set_running(&g,true);
+    assert(receive(&g,&announce_message,0,&assignment)==OSG_GW_RX_ASSIGNMENT); assignment.source_node=97;
     osg_gateway_message_t in=input(assignment,1);
     assert(receive(&g,&in,1,NULL)==OSG_GW_RX_ACCEPTED);
     uint8_t wire[6]={1}; osg_gateway_delivery_t delivery;
@@ -327,33 +335,33 @@ static void transport_source_test(void) {
     announce_message.source_node=128;
     assert(receive(&g,&announce_message,9,&moved)==OSG_GW_RX_REJECTED);
 }
-static bool persist(void *context) { unsigned *calls=context; (*calls)++; return *calls>1; }
+static bool persist(void *context) { unsigned *calls=context; (*calls)++; return false; }
 static void cockpit_test(void) {
     osg_gateway_cockpit_request_t r;
     assert(osg_gateway_cockpit_parse("cockpit 4294967295 snapshot",&r) && r.id==UINT32_MAX);
     const char *invalid[]={"cockpit 4294967296 snapshot","cockpit -1 snapshot","cockpit 1 snapshot ",
-        "cockpit 1 0 save","cockpit 1 save","cockpit 1 1 apply x","cockpit 1 1 register bad"};
+        "cockpit 1 0 disable x","cockpit 1 save","cockpit 1 1 apply","cockpit 1 1 register 00000000000000000000000000000001"};
     for(unsigned i=0;i<sizeof invalid/sizeof invalid[0];i++) assert(!osg_gateway_cockpit_parse(invalid[i],&r));
     osg_gateway_t g; assert(osg_gateway_init(&g,0x10000,NULL)); discover(&g,1,0);
     char id[33],line[80]; osg_gateway_identity_t module=identity(1); osg_gateway_identity_format(&module,id);
-    snprintf(line,sizeof line,"cockpit 2 1 register %s",id); assert(osg_gateway_cockpit_parse(line,&r));
+    snprintf(line,sizeof line,"cockpit 2 1 disable %s",id); assert(osg_gateway_cockpit_parse(line,&r));
     bool apply=true; unsigned calls=0;
     assert(!strcmp(osg_gateway_cockpit_execute(&g,&r,persist,&calls,&apply),"stale_epoch") && !apply && !calls);
-    assert(!g.pending.slots[0].occupied);
-    snprintf(line,sizeof line,"cockpit 2 65536 register %s",id); assert(osg_gateway_cockpit_parse(line,&r));
-    assert(!osg_gateway_cockpit_execute(&g,&r,persist,&calls,&apply) && !apply);
-    assert(osg_gateway_cockpit_parse("cockpit 3 65536 apply",&r));
-    assert(!strcmp(osg_gateway_cockpit_execute(&g,&r,persist,&calls,&apply),"flash_save_failed") && !apply && calls==1);
-    assert(!osg_gateway_cockpit_execute(&g,&r,persist,&calls,&apply) && apply && calls==2);
-    assert(!g.active.slots[0].occupied); /* caller must physically detach before applying */
+    assert(g.pending.slots[0].enabled); /* Automatic discovery already staged it. */
+    snprintf(line,sizeof line,"cockpit 2 65536 disable %s",id); assert(osg_gateway_cockpit_parse(line,&r));
+    assert(!osg_gateway_cockpit_execute(&g,&r,persist,&calls,&apply) && !apply && !calls);
+    assert(!g.pending.slots[0].enabled);
+    snprintf(line,sizeof line,"cockpit 3 65536 forget %s",id); assert(osg_gateway_cockpit_parse(line,&r));
+    assert(!strcmp(osg_gateway_cockpit_execute(&g,&r,NULL,NULL,&apply),"device_online"));
     char output[OSG_GW_COCKPIT_RESPONSE_CAPACITY];
     assert(osg_gateway_cockpit_response(&g,"0123456789abcdef01234567",3,"stale_epoch",output,sizeof output));
-    assert(strstr(output,"\"id\":3,\"ok\":false") && strstr(output,"\"needsApply\":true"));
+    assert(strstr(output,"\"id\":3,\"ok\":false") && strstr(output,"\"layoutPending\":true"));
+    assert(strstr(output,"\"enabled\":false,\"published\":false"));
     assert(!osg_gateway_cockpit_response(&g,"0123456789abcdef01234567",3,NULL,output,10) && !output[0]);
 }
 static void configuration_test(void) {
     osg_gateway_t g; assert(osg_gateway_init(&g,65536,NULL));
-    (void)discover(&g,1,0);
+    osg_gateway_message_t initial=discover(&g,1,0);
     osg_gateway_config_t c={0}; osg_gateway_cockpit_request_t request;
     assert(osg_gateway_cockpit_parse("cockpit 9 65536 config 00000000000000000000000000000001 100 claim 17",&request));
     assert(request.action==OSG_GW_COCKPIT_CONFIG && request.boot==100 && !strcmp(request.command,"claim 17"));
@@ -362,6 +370,8 @@ static void configuration_test(void) {
     assert(osg_gateway_cockpit_parse("cockpit 9 65536 config 00000000000000000000000000000001 100 get",&request));
     request.epoch++; assert(!strcmp(osg_gateway_config_start(&c,&g,&request,0),"stale_epoch"));request.epoch--;
     request.boot++; assert(!strcmp(osg_gateway_config_start(&c,&g,&request,0),"stale_module_boot"));request.boot--;
+    assert(!strcmp(osg_gateway_config_start(&c,&g,&request,0),"configuration_route_not_ready") && !c.busy);
+    osg_gateway_message_t ready=input(initial,1); assert(receive(&g,&ready,0,NULL)==OSG_GW_RX_ACCEPTED);
     assert(!osg_gateway_config_start(&c,&g,&request,0));
     assert(!strcmp(osg_gateway_config_start(&c,&g,&request,0),"configuration_busy"));
     osg_gateway_message_t response=c.route; response.type=OSG_GW_CONFIG_RESPONSE;
@@ -400,9 +410,172 @@ static void configuration_test(void) {
     assert(receive(&g,&old_report,5,NULL)==OSG_GW_RX_REJECTED);
     assert(!osg_gateway_delivery_complete(&g,&delivery,packet,size+1,&ack));
 }
+typedef struct { bool fail; unsigned writes; osg_gateway_registry_t saved; } lifecycle_store_t;
+static bool lifecycle_persist(void *context,const osg_gateway_registry_t *registry) {
+    lifecycle_store_t *store=context; store->writes++;
+    if(store->fail) return false;
+    store->saved=*registry; return true;
+}
+static osg_gateway_layout_event_t lifecycle_tick(osg_gateway_layout_t *layout,osg_gateway_t *g,
+    lifecycle_store_t *store,uint32_t now,bool drained) {
+    osg_gateway_layout_event_t event=osg_gateway_layout_service(layout,g,now,drained,lifecycle_persist,store);
+    if(event==OSG_GATEWAY_LAYOUT_DETACH) assert(osg_gateway_activate_prepared(g,&layout->target,true,&layout->activation));
+    if(event==OSG_GATEWAY_LAYOUT_ATTACH) osg_gateway_set_running(g,true);
+    return event;
+}
+static void lifecycle_flush(osg_gateway_layout_t *layout,osg_gateway_t *g,lifecycle_store_t *store,uint32_t now) {
+    (void)lifecycle_tick(layout,g,store,now,true);
+    (void)lifecycle_tick(layout,g,store,now+100,true);
+    (void)lifecycle_tick(layout,g,store,now+200,true);
+    (void)lifecycle_tick(layout,g,store,now+450,true);
+    assert(!osg_gateway_needs_apply(g) && !g->layout_transition);
+}
+static void disabled_snapshot_test(void) {
+    osg_gateway_t g; assert(osg_gateway_init(&g,65536,NULL));
+    osg_gateway_message_t announce_message=announce(1),assignment;
+    announce_message.profile=maximum_profile();
+    assert(receive(&g,&announce_message,0,&assignment)==OSG_GW_RX_ASSIGNMENT);
+    osg_gateway_apply_layout(&g); osg_gateway_set_running(&g,true);
+    assert(receive(&g,&announce_message,0,&assignment)==OSG_GW_RX_ASSIGNMENT);
+    osg_gateway_message_t pressed=assignment; pressed.type=OSG_GW_INPUT; pressed.source_node=21; pressed.sequence=1;
+    memset(pressed.report,255,sizeof pressed.report); pressed.report[16]=0x70; pressed.report[17]=0x88;
+    assert(receive(&g,&pressed,1,NULL)==OSG_GW_RX_ACCEPTED);
+    uint8_t actual[34]; assert(osg_gateway_report(&g,0,actual,sizeof actual)==34 && actual[0]==255);
+    osg_gateway_identity_t id=identity(1); assert(osg_gateway_disable(&g,&id));
+    char response[OSG_GW_COCKPIT_RESPONSE_CAPACITY],neutral_hex[69]; uint8_t neutral_report[34];
+    osg_gateway_profile_neutral(&announce_message.profile,neutral_report);
+    for(unsigned i=0;i<34;i++) snprintf(neutral_hex+2*i,3,"%02x",neutral_report[i]);
+    assert(osg_gateway_cockpit_response(&g,"0123456789abcdef01234567",1,NULL,response,sizeof response));
+    assert(strstr(response,"\"enabled\":false,\"published\":true") && strstr(response,neutral_hex));
+    assert(osg_gateway_report(&g,0,actual,sizeof actual)==34 && actual[0]==255); /* Prior active USB is unchanged before save. */
+}
+static void automatic_lifecycle_test(void) {
+    osg_gateway_t g; osg_gateway_layout_t layout={0}; lifecycle_store_t store={0};
+    assert(osg_gateway_init(&g,65536,NULL)); (void)discover(&g,1,0);
+    assert(g.pending.slots[0].enabled && !g.active.slots[0].occupied);
+    assert(lifecycle_tick(&layout,&g,&store,0,true)==OSG_GATEWAY_LAYOUT_IDLE && !store.writes);
+    (void)discover(&g,2,20); (void)lifecycle_tick(&layout,&g,&store,20,true);
+    (void)lifecycle_tick(&layout,&g,&store,120,true); assert(store.writes==1);
+    uint32_t saved=store.saved.generation;
+    (void)discover(&g,3,130); /* Arrived after save: cannot enter the saved descriptor. */
+    assert(g.pending.generation!=saved && !g.active.slots[0].occupied);
+    assert(lifecycle_tick(&layout,&g,&store,220,true)==OSG_GATEWAY_LAYOUT_DETACH);
+    assert(g.active.generation==saved && !g.active.slots[2].occupied);
+    uint8_t two[4096],three[4096],removed[4096]; size_t two_size=osg_gateway_descriptor(&g,two,sizeof two);
+    assert(lifecycle_tick(&layout,&g,&store,470,true)==OSG_GATEWAY_LAYOUT_ATTACH);
+    lifecycle_flush(&layout,&g,&store,480);
+    size_t three_size=osg_gateway_descriptor(&g,three,sizeof three);
+    assert(three_size>two_size && !memcmp(two,three,two_size) && store.writes==2);
+    (void)discover(&g,1,1000); (void)lifecycle_tick(&layout,&g,&store,1000,true);
+    assert(store.writes==2); /* Repeat announce does not erase flash or reconnect. */
+    osg_gateway_tick(&g,3000);
+    assert(osg_gateway_descriptor(&g,removed,sizeof removed)==three_size && !memcmp(removed,three,three_size));
+    check_report(&g,0,false); /* Offline enabled ghost stays enumerated and neutral. */
+    osg_gateway_identity_t second=identity(2),third=identity(3);
+    assert(osg_gateway_disable(&g,&second)); uint32_t disabled_generation=g.pending.generation;
+    (void)discover(&g,2,3001); assert(g.pending.generation==disabled_generation && !g.pending.slots[1].enabled);
+    lifecycle_flush(&layout,&g,&store,3010);
+    size_t removed_size=osg_gateway_descriptor(&g,removed,sizeof removed);
+    assert(removed_size<three_size && !osg_gateway_report(&g,1,three,sizeof three));
+    assert(osg_gateway_descriptor_index(&g.active,&third)==1 && g.active.slots[2].report_id==3);
+    uint8_t encoded[OSG_GW_REGISTRY_RECORD_SIZE]; osg_gateway_registry_t restored;
+    assert(osg_gateway_registry_encode(&store.saved,encoded,sizeof encoded));
+    assert(osg_gateway_registry_decode(encoded,sizeof encoded,&restored));
+    assert(osg_gateway_init(&g,131072,&restored)); memset(&layout,0,sizeof layout);
+    (void)discover(&g,2,4000); assert(!g.pending.slots[1].enabled && !osg_gateway_needs_apply(&g));
+    assert(osg_gateway_enable(&g,&second)); assert(g.pending.slots[1].order==2 && g.pending.slots[1].report_id==2);
+    lifecycle_flush(&layout,&g,&store,4010);
+    three_size=osg_gateway_descriptor(&g,three,sizeof three);
+    assert(three_size>removed_size && !memcmp(removed,three,removed_size)); /* Re-enable appends, never restores an old gap. */
+    assert(!osg_gateway_forget(&g,&second)); osg_gateway_tick(&g,6000);
+    assert(osg_gateway_forget(&g,&second)); lifecycle_flush(&layout,&g,&store,6010);
+    assert(osg_gateway_find_module(&g,&second)<0 && osg_gateway_find_slot(&g.pending,&second)<0);
+    (void)discover(&g,2,6500); assert(osg_gateway_descriptor_index(&g.pending,&second)==2);
+    store.fail=true; (void)lifecycle_tick(&layout,&g,&store,6500,true);
+    (void)lifecycle_tick(&layout,&g,&store,6600,true);
+    assert(!strcmp(g.layout_error,"flash_save_failed") && osg_gateway_descriptor_index(&g.active,&second)<0);
+    unsigned writes=store.writes; (void)lifecycle_tick(&layout,&g,&store,6601,true); assert(store.writes==writes);
+    store.fail=false; (void)lifecycle_tick(&layout,&g,&store,7600,true);
+    assert(lifecycle_tick(&layout,&g,&store,7700,false)==OSG_GATEWAY_LAYOUT_IDLE);
+    /* Even an unread CDC response cannot prevent discovery from activating forever. */
+    assert(lifecycle_tick(&layout,&g,&store,8700,false)==OSG_GATEWAY_LAYOUT_DETACH);
+    assert(lifecycle_tick(&layout,&g,&store,8950,true)==OSG_GATEWAY_LAYOUT_ATTACH && !g.layout_error);
+    assert(osg_gateway_disable(&g,&second)); lifecycle_flush(&layout,&g,&store,9000);
+    unsigned reconnects=layout.reconnects;
+    osg_gateway_message_t changed=announce(2),reply; changed.profile.button_count=4;
+    assert(receive(&g,&changed,9500,&reply)==OSG_GW_RX_ASSIGNMENT);
+    lifecycle_flush(&layout,&g,&store,9500);
+    assert(!g.pending.slots[osg_gateway_find_slot(&g.pending,&second)].enabled && layout.reconnects==reconnects);
+    /* Reverting a failed change must clear an obsolete persistence error. */
+    assert(osg_gateway_enable(&g,&second)); lifecycle_flush(&layout,&g,&store,10000);
+    assert(osg_gateway_disable(&g,&second)); store.fail=true;
+    (void)lifecycle_tick(&layout,&g,&store,10500,true); (void)lifecycle_tick(&layout,&g,&store,10600,true);
+    assert(g.layout_error); assert(osg_gateway_enable(&g,&second));
+    (void)lifecycle_tick(&layout,&g,&store,10601,true);
+    assert(!osg_gateway_needs_apply(&g) && !g.layout_error);
+
+}
+static void publication_lease_test(void) {
+    osg_gateway_t g; osg_gateway_layout_t layout={0}; lifecycle_store_t store={0};
+    assert(osg_gateway_init(&g,65536,NULL)); (void)discover(&g,1,0);
+    assert(osg_gateway_activate(&g,&g.pending,true)); osg_gateway_set_running(&g,true);
+    osg_gateway_message_t assigned=discover(&g,1,0),pressed=input(assigned,1);
+    assert(receive(&g,&pressed,1,NULL)==OSG_GW_RX_ACCEPTED);
+    uint8_t packet[6]={1}; osg_gateway_delivery_t delivery; osg_gateway_message_t ack;
+    assert(osg_gateway_delivery_prepare(&g,0,packet+1,5,&delivery)==5 && delivery.valid);
+    osg_gateway_identity_t id=identity(1); assert(osg_gateway_disable(&g,&id));
+    g.lease_counter=65533;
+    (void)lifecycle_tick(&layout,&g,&store,10,true); (void)lifecycle_tick(&layout,&g,&store,110,true);
+    assert(store.writes==1 && g.reserved_leases==1 && layout.activation.count==1);
+    /* A changed boot after save receives a newer lease. Publication must then
+     * issue an even newer lease rather than use a previously reserved number. */
+    osg_gateway_message_t reboot=announce(1),late; reboot.boot_session=101;
+    assert(receive(&g,&reboot,120,&late)==OSG_GW_RX_ASSIGNMENT && late.lease==65536+65534);
+    osg_gateway_message_t newcomer=announce(2),reply;
+    assert(receive(&g,&newcomer,121,&reply)==OSG_GW_RX_FULL && !strcmp(g.admission_error,"lease_exhausted"));
+    assert(g.lease_counter==65534 && g.reserved_leases==1); /* Arrival cannot spend the publication budget. */
+    assert(lifecycle_tick(&layout,&g,&store,210,true)==OSG_GATEWAY_LAYOUT_DETACH);
+    assert(g.modules[0].lease>late.lease && g.lease_counter==65535 && !g.reserved_leases);
+    assert(!g.modules[0].has_sequence && !g.modules[0].has_input);
+    late.type=OSG_GW_INPUT; late.source_node=21; late.sequence=1;
+    memcpy(late.report,pressed.report,sizeof late.report);
+    assert(receive(&g,&late,211,NULL)==OSG_GW_RX_REJECTED);
+    assert(!osg_gateway_delivery_complete(&g,&delivery,packet,sizeof packet,&ack));
+    assert(receive(&g,&reboot,212,&reply)==OSG_GW_RX_ASSIGNMENT && reply.lease==g.modules[0].lease);
+    assert(receive(&g,&reboot,213,&reply)==OSG_GW_RX_ASSIGNMENT && g.lease_counter==65535);
+    osg_gateway_config_t configuration={0}; osg_gateway_cockpit_request_t request;
+    assert(osg_gateway_cockpit_parse("cockpit 1 65536 config 00000000000000000000000000000001 101 get_active",&request));
+    assert(!strcmp(osg_gateway_config_start(&configuration,&g,&request,213),"configuration_route_not_ready"));
+    osg_gateway_message_t ready=input(reply,1); ready.source_node=21;
+    assert(receive(&g,&ready,214,NULL)==OSG_GW_RX_ACCEPTED);
+    assert(!g.active.slots[0].enabled && !osg_gateway_config_start(&configuration,&g,&request,214));
+    osg_gateway_config_cancel(&configuration); /* Hidden controllers remain configurable after new-lease proof. */
+    assert(lifecycle_tick(&layout,&g,&store,460,true)==OSG_GATEWAY_LAYOUT_ATTACH);
+    assert(osg_gateway_enable(&g,&id)); unsigned writes=store.writes;
+    (void)lifecycle_tick(&layout,&g,&store,470,true); (void)lifecycle_tick(&layout,&g,&store,570,true);
+    assert(!strcmp(g.layout_error,"lease_exhausted") && store.writes==writes && !g.active.slots[0].enabled);
+    (void)lifecycle_tick(&layout,&g,&store,571,true); assert(store.writes==writes && !layout.pending);
+
+    /* An offline remembered identity is reserved too: it may announce between
+     * save and detach, and its pre-publication input still must be rejected. */
+    osg_gateway_registry_t remembered=store.saved; memset(&layout,0,sizeof layout); memset(&store,0,sizeof store);
+    assert(osg_gateway_init(&g,131072,&remembered)); g.lease_counter=65533;
+    assert(osg_gateway_enable(&g,&id));
+    (void)lifecycle_tick(&layout,&g,&store,0,true); (void)lifecycle_tick(&layout,&g,&store,100,true);
+    assert(g.reserved_leases==1 && !g.modules[0].online);
+    assigned=discover(&g,1,110); assert(assigned.lease==131072+65534);
+    assert(lifecycle_tick(&layout,&g,&store,200,true)==OSG_GATEWAY_LAYOUT_DETACH);
+    assert(g.modules[0].online && g.modules[0].lease==131072+65535);
+    pressed=input(assigned,1); assert(receive(&g,&pressed,201,NULL)==OSG_GW_RX_REJECTED);
+    assert(lifecycle_tick(&layout,&g,&store,450,true)==OSG_GATEWAY_LAYOUT_ATTACH);
+    assigned=discover(&g,1,451); pressed=input(assigned,1);
+    assert(receive(&g,&pressed,452,NULL)==OSG_GW_RX_ACCEPTED); check_report(&g,0,true);
+    unsigned unchanged=g.lease_counter; assert(osg_gateway_activate(&g,&g.pending,false));
+    assert(g.lease_counter==unchanged && g.modules[0].has_input); /* No visibility change, no rearm. */
+}
 static void snapshot(void) {
     osg_gateway_registry_t r={0};
-    for(unsigned i=0;i<10;i++) r.slots[i]=(osg_gateway_slot_t){.occupied=true,.identity=identity(i+1),.profile=maximum_profile()};
+    for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) r.slots[i]=(osg_gateway_slot_t){.occupied=true,.enabled=true,.report_id=(uint8_t)(i+1),.order=(uint8_t)i,.identity=identity(i+1),.profile=maximum_profile()};
     osg_gateway_t g; assert(osg_gateway_init(&g,0x10000,&r));
     char output[OSG_GW_COCKPIT_RESPONSE_CAPACITY];
     assert(osg_gateway_cockpit_response(&g,"0123456789abcdef01234567",123,NULL,output,sizeof output));
@@ -417,15 +590,19 @@ static void cockpit_vectors(void) {
     osg_gateway_t g; assert(osg_gateway_init(&g,0x10000,NULL));
     osg_gateway_message_t msg=announce(1); msg.profile=maximum_profile(); osg_gateway_message_t reply;
     assert(receive(&g,&msg,0,&reply)==OSG_GW_RX_ASSIGNMENT);
-    puts("{"); cockpit_case("discovered_unregistered",&g,1,NULL,false);
+    puts("{"); cockpit_case("enrolled_pending",&g,1,NULL,false);
     osg_gateway_identity_t id=identity(1); assert(osg_gateway_register(&g,&id));
     cockpit_case("pending_profile",&g,2,NULL,false);
     osg_gateway_apply_layout(&g); osg_gateway_set_running(&g,true);
+    assert(receive(&g,&msg,0,&reply)==OSG_GW_RX_ASSIGNMENT);
     msg=reply; msg.source_node=21; msg.type=OSG_GW_INPUT; msg.sequence=1;
     for(unsigned i=0;i<sizeof msg.report;i++) msg.report[i]=(uint8_t)(i+1);
     msg.report[16]=0x70; msg.report[17]=0x88;
     assert(receive(&g,&msg,1,NULL)==OSG_GW_RX_ACCEPTED);
     cockpit_case("active_report",&g,3,NULL,false);
+    assert(osg_gateway_disable(&g,&id)); cockpit_case("staged_disabled",&g,11,NULL,false);
+    assert(osg_gateway_enable(&g,&id));
+
     msg.type=OSG_GW_HEARTBEAT; msg.identity=id; msg.sequence=2; msg.direct_usb=true;
     assert(receive(&g,&msg,2,NULL)==OSG_GW_RX_ACCEPTED);
     cockpit_case("direct_usb",&g,4,NULL,false);
@@ -434,12 +611,15 @@ static void cockpit_vectors(void) {
     msg=announce(1); msg.profile.hat_count=3; msg.profile.revision=2;
     assert(receive(&g,&msg,1503,&reply)==OSG_GW_RX_ASSIGNMENT);
     cockpit_case("profile_changed",&g,7,NULL,false);
-    assert(osg_gateway_register(&g,&id)); cockpit_case("profile_updated_pending",&g,8,NULL,true);
+    assert(osg_gateway_register(&g,&id)); cockpit_case("profile_updated_pending",&g,8,NULL,false);
+    assert(osg_gateway_disable(&g,&id)); osg_gateway_apply_layout(&g);
+    cockpit_case("disabled",&g,9,NULL,false);
+    assert(osg_gateway_enable(&g,&id)); cockpit_case("enable_pending",&g,10,NULL,true);
     puts("}");
 }
 int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--snapshot")) { snapshot(); return 0; }
     if(argc==2 && !strcmp(argv[1],"--cockpit-vectors")) { cockpit_vectors(); return 0; }
-    protocol_test(); lifecycle_test(); bounds_and_wrap_test(); registry_test(); descriptor_test(); maximum_profile_test(); delivery_test(); transport_source_test(); cockpit_test(); configuration_test();
+    protocol_test(); lifecycle_test(); bounds_and_wrap_test(); registry_test(); descriptor_test(); maximum_profile_test(); delivery_test(); transport_source_test(); cockpit_test(); configuration_test(); automatic_lifecycle_test(); disabled_snapshot_test(); publication_lease_test();
     puts("gateway core: all tests passed"); return 0;
 }

@@ -51,17 +51,17 @@ static void append(const char *format,...) {
         response_size+=(size_t)written<available ? (size_t)written : available-1;
     }
 }
-static bool save_registry(void) {
+static bool save_registry(const osg_gateway_registry_t *registry) {
     uint8_t record[OSG_GW_REGISTRY_RECORD_SIZE];
-    size_t size=osg_gateway_registry_encode(&gateway.pending,record,sizeof record);
+    size_t size=osg_gateway_registry_encode(registry,record,sizeof record);
     return size && board_registry_commit(record,size,gateway.epoch);
 }
 static void identity(void) {
     char uid[25]; board_uid_hex(uid);
-    append("gatewayType=stm32-can-gateway protocol=2 canProtocol=3 firmware=0.3.0 board=gateway_g0b1cb_v0_1_0 identity=%s epoch=%lu maxModules=%u\r\n",
+    append("gatewayType=stm32-can-gateway protocol=3 canProtocol=3 firmware=0.4.0 board=gateway_g0b1cb_v0_1_0 identity=%s epoch=%lu maxModules=%u\r\n",
         uid,(unsigned long)gateway.epoch,OSG_GW_MAX_MODULES);
 }
-static bool cockpit_save(void *context) { (void)context; return save_registry(); }
+static bool layout_save(void *context,const osg_gateway_registry_t *registry) { (void)context; return save_registry(registry); }
 static void cockpit_command(const char *line,uint32_t now) {
     osg_gateway_cockpit_request_t request={0};
     const char *error=NULL;
@@ -70,8 +70,7 @@ static void cockpit_command(const char *line,uint32_t now) {
     else if(request.action==OSG_GW_COCKPIT_CONFIG) {
         error=osg_gateway_config_start(&configuration,&gateway,&request,now);
         if(!error) return;
-    } else error=osg_gateway_cockpit_execute(&gateway,&request,cockpit_save,NULL,&apply);
-    if(apply) osg_gateway_layout_schedule(&layout,now);
+    } else error=osg_gateway_cockpit_execute(&gateway,&request,NULL,NULL,&apply);
     char uid[25]; board_uid_hex(uid);
     response_size=osg_gateway_cockpit_response(&gateway,uid,request.id,error,response,sizeof response);
     if(!response_size) append("{\"id\":%lu,\"ok\":false,\"error\":\"response_overflow\",\"state\":null}\r\n",(unsigned long)request.id);
@@ -79,17 +78,22 @@ static void cockpit_command(const char *line,uint32_t now) {
 static void command(const char *line,uint32_t now) {
     if(!strncmp(line,"cockpit ",8)) cockpit_command(line,now);
     else if(!strcmp(line,"hello") || !strcmp(line,"identity") || !strcmp(line,"info")) identity();
-    else if(!strcmp(line,"help")) append("identity | inventory | registry | register <32hex> | unregister <32hex> | save | apply | diagnostics | cockpit <id> snapshot | cockpit <id> <epoch> register <32hex>|unregister <32hex>|save|apply|config <32hex> <boot> <child-command>\r\n");
+    else if(!strcmp(line,"help")) append("identity | inventory | registry | enable <32hex> | disable <32hex> | forget <32hex> | update-profile <32hex> | diagnostics | cockpit <id> snapshot | cockpit <id> <epoch> enable <32hex>|disable <32hex>|forget <32hex>|update-profile <32hex>|config <32hex> <boot> <child-command>\r\n");
     else if(!strcmp(line,"inventory")) {
         identity();
         for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) {
             const osg_gateway_module_t *module=&gateway.modules[i]; if(!module->occupied) continue;
             char id[33]; osg_gateway_identity_format(&module->identity,id);
-            append("module identity=%s node=%u online=%u directUsb=%u input=%u axes=%u buttons=%u hats=%u revision=%u registered=%d active=%d lastSeenMs=%lu\r\n",
+            int desired=osg_gateway_find_slot(&gateway.pending,&module->identity);
+            int published=osg_gateway_find_slot(&gateway.active,&module->identity);
+            append("module identity=%s node=%u online=%u directUsb=%u input=%u axes=%u buttons=%u hats=%u revision=%u enabled=%u published=%u descriptorIndex=%d reportId=%u lastSeenMs=%lu\r\n",
                 id,module->node,module->online,module->direct_usb,module->has_input,module->profile.axis_count,
                 module->profile.button_count,module->profile.hat_count,module->profile.revision,
-                osg_gateway_find_slot(&gateway.pending,&module->identity),
-                osg_gateway_find_slot(&gateway.active,&module->identity),(unsigned long)(now-module->last_seen));
+                desired>=0 && gateway.pending.slots[desired].enabled,
+                published>=0 && gateway.active.slots[published].enabled,
+                osg_gateway_descriptor_index(&gateway.active,&module->identity),
+                published>=0 && gateway.active.slots[published].enabled ? gateway.active.slots[published].report_id : 0,
+                (unsigned long)(now-module->last_seen));
         }
         append("OK inventory\r\n");
     } else if(!strcmp(line,"registry")) {
@@ -98,22 +102,13 @@ static void command(const char *line,uint32_t now) {
             char p[33]="-",a[33]="-";
             if(pending->occupied) osg_gateway_identity_format(&pending->identity,p);
             if(active->occupied) osg_gateway_identity_format(&active->identity,a);
-            append("slot=%u reportId=%u pending=%s active=%s\r\n",i,i+1,p,a);
+            append("record=%u reportId=%u order=%u enabled=%u pending=%s active=%s\r\n",i,pending->report_id,pending->order,pending->enabled,p,a);
         }
         append("OK applyRequired=%u\r\n",osg_gateway_needs_apply(&gateway));
-    } else if(!strncmp(line,"register ",9) || !strncmp(line,"unregister ",11)) {
-        bool remove=line[0]=='u'; osg_gateway_identity_t id;
-        if(!osg_gateway_identity_parse(line+(remove ? 11 : 9),&id)) append("ERR identity must be 32 hexadecimal digits\r\n");
-        else {
-            bool ok=remove ? osg_gateway_unregister(&gateway,&id) : osg_gateway_register(&gateway,&id);
-            append(ok ? "OK pending registry changed; save persists, apply activates USB layout\r\n" :
-                "ERR registration rejected (unknown, offline, profile, or capacity)\r\n");
-        }
-    } else if(!strcmp(line,"save")) append(save_registry() ? "OK registry saved; activation on apply or next boot\r\n" : "ERR flash save failed\r\n");
-    else if(!strcmp(line,"apply")) {
-        if(!osg_gateway_needs_apply(&gateway)) append("OK layout unchanged\r\n");
-        else if(!save_registry()) append("ERR flash save failed; USB layout unchanged\r\n");
-        else { append("OK registry saved; applying USB layout\r\n"); osg_gateway_layout_schedule(&layout,now); }
+    } else if(!strncmp(line,"enable ",7) || !strncmp(line,"disable ",8) ||
+              !strncmp(line,"forget ",7) || !strncmp(line,"update-profile ",15)) {
+        char request_line[OSG_GW_CONFIG_COMMAND_CAPACITY+128]; snprintf(request_line,sizeof request_line,"cockpit 0 %lu %s",(unsigned long)gateway.epoch,line);
+        cockpit_command(request_line,now);
     } else if(!strcmp(line,"diagnostics")) {
         board_can_diagnostics_t can=board_can_diagnostics();
         append("can rx=%lu tx=%lu rxDrop=%lu txDrop=%lu txFailed=%lu queued=%u busOff=%u recovering=%u recoveries=%lu rxError=%u txError=%u halError=%08lx\r\n",
@@ -133,7 +128,7 @@ static void hid_task(uint32_t now) {
         size_t length=osg_gateway_delivery_prepare(&gateway,slot,report,sizeof report,&delivery);
         if(!length) continue;
         if(sent_valid[slot] && !memcmp(report,sent[slot],length) && (uint32_t)(now-last_report[slot])<10U) continue;
-        if(tud_hid_report((uint8_t)(slot+1),report,(uint16_t)length)) {
+        if(tud_hid_report(gateway.active.slots[slot].report_id,report,(uint16_t)length)) {
             memcpy(sent[slot],report,length); sent_valid[slot]=true; last_report[slot]=now; hid_inflight=true;
             inflight_delivery=delivery;
         }
@@ -149,7 +144,7 @@ static void initialize_gateway(void) {
         if(!osg_gateway_registry_decode(record,length,&restored)) board_fault();
         registry=&restored;
     }
-    if(epoch>UINT32_MAX-0x10000U || !osg_gateway_init(&gateway,epoch+0x10000U,registry) || !save_registry() ||
+    if(epoch>UINT32_MAX-0x10000U || !osg_gateway_init(&gateway,epoch+0x10000U,registry) || !save_registry(&gateway.pending) ||
        !gateway_usb_prepare(&gateway)) board_fault();
     char uid[33]; board_uid_hex(uid); memcpy(uid+24,"47575459",9);
     osg_gateway_identity_t unique_id;
@@ -166,10 +161,11 @@ int main(void) {
     char line_buffer[OSG_GW_CONFIG_COMMAND_CAPACITY+96]; osg_line_t line; osg_line_init(&line,line_buffer,sizeof line_buffer);
     for(;;) {
         uint32_t now=board_millis(); bool vbus=board_usb_present();
-        osg_gateway_layout_event_t layout_event=osg_gateway_layout_tick(&layout,now,response_size==0 && !configuration.busy);
+        osg_gateway_layout_event_t layout_event=osg_gateway_layout_service(&layout,&gateway,now,response_size==0 && !configuration.busy,layout_save,NULL);
         if(layout_event==OSG_GATEWAY_LAYOUT_DETACH) {
             tud_disconnect(); attached=false; active=false; invalidate_reports();
-            osg_gateway_apply_layout(&gateway);
+            osg_gateway_config_cancel(&configuration);
+            (void)osg_gateway_activate_prepared(&gateway,&layout.target,true,&layout.activation);
             if(!gateway_usb_prepare(&gateway)) board_fault();
         }
         bool should_attach=vbus && !layout.detached;
@@ -270,12 +266,10 @@ void tud_hid_report_failed_cb(uint8_t instance,hid_report_type_t type,const uint
 }
 uint16_t tud_hid_get_report_cb(uint8_t instance,uint8_t id,hid_report_type_t type,uint8_t *buffer,uint16_t length) {
     if(instance || type!=HID_REPORT_TYPE_INPUT || !buffer || !length) return 0;
-    if(id==11) {
-        for(unsigned slot=0;slot<OSG_GW_MAX_MODULES;slot++) if(gateway.active.slots[slot].occupied) return 0;
-        buffer[0]=0; return 1;
-    }
-    if(id<1 || id>OSG_GW_MAX_MODULES) return 0;
-    return (uint16_t)osg_gateway_report(&gateway,id-1,buffer,length);
+    for(unsigned index=0;index<OSG_GW_MAX_MODULES;index++)
+        if(gateway.active.slots[index].occupied && gateway.active.slots[index].enabled && gateway.active.slots[index].report_id==id)
+            return (uint16_t)osg_gateway_report(&gateway,index,buffer,length);
+    return 0;
 }
 void tud_hid_set_report_cb(uint8_t instance,uint8_t id,hid_report_type_t type,const uint8_t *buffer,uint16_t length) {
     (void)instance; (void)id; (void)type; (void)buffer; (void)length;

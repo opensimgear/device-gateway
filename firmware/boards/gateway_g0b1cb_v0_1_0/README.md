@@ -40,7 +40,7 @@ and the [reference peer](../../../tools/README.md) for discovery and input.
 Required bench observations are USB HID/CDC enumeration; VBUS attach/detach
 while 12 V remains; both port placements; CAN ACK/error recovery with the peer
 unplugged; configured neutral reports after loss; descriptor stability during
-module absence; save/apply persistence; and controlled power interruption during
+module absence; automatic enrollment/disable persistence and CDC-only empty enumeration; and controlled power interruption during
 inactive-page erase, programming and final commit. Confirm the first flash page
 and application checksum stay intact during storage writes in the actual bank
 mode. Native fault-injection tests cover journal sequencing, not MCU electrical
