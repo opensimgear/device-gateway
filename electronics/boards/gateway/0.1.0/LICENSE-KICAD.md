@@ -1,6 +1,6 @@
 # Included KiCad library data
 
-Selected symbols and footprints from the KiCad 10.0.6 libraries, compiled by the KiCad community, are redistributed in `KiCad.kicad_sym` and `KiCad.pretty/`. These copies retain their descriptions and datasheet/3D-model references; inherited symbols are flattened and library names made project-relative. The custom `OpenSimGear.kicad_sym` is authored separately and its project license remains pending.
+Selected symbols and footprints from the KiCad 10.0.6 libraries, compiled by the KiCad community, are redistributed in `KiCad.kicad_sym` and `KiCad.pretty/`. These copies retain their descriptions and datasheet/3D-model references; inherited symbols are flattened and library names made project-relative. The custom `OpenSimGear.kicad_sym` is authored separately and no project license grant is declared.
 
 ### KiCad Libraries License
 

@@ -61,8 +61,7 @@ Cyphal forwarding and module C handlers in native emulation. Tests cover draft
 ownership/expiry, invalid mappings, Unicode names, descriptor activation,
 calibrated reports, retained slots, interrupted settings/registry writes,
 stale input/completion rejection, reply replay without extra flash writes,
-bounded timeout recovery and restoration across process restart. Firmware updates
-remain future work.
+bounded timeout recovery and restoration across process restart.
 Use the [reference peer](../tools/README.md) for the first CAN bench test.
 
 Source review fixed the DTR-open race: the first incoming machine command is

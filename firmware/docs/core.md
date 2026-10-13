@@ -114,7 +114,7 @@ gateway epoch and module boot session, and each fragment/reply binds identity,
 logical node, source node, lease, epoch and request ID. A changed route rejects
 the request; incomplete responses expire after 4 seconds. Fixed buffers bound
 commands to 383 bytes, module responses to 4095 bytes and combined CDC responses
-to 12287 bytes. Firmware updates remain future work.
+to 12287 bytes.
 
 `gateway_layout.c` waits for the saved Apply response to drain, then emits the
 detach event after a 100 ms grace period. The board disconnects USB, invalidates

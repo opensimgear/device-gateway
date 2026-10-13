@@ -13,13 +13,13 @@ license files and provenance in [shared-cyphal](shared-cyphal/README.md).
 | [STM32G0 CMSIS](https://github.com/STMicroelectronics/cmsis-device-g0) | `7c77b7cbcee497dfbb5cc08f9562a80515e78013` | MCU startup, register definitions; Apache-2.0 |
 | [Arm CMSIS](https://github.com/ARM-software/CMSIS_5) | `55b19837f5703e418ca37894d5745b1dc05e4c91` | Core headers; Apache-2.0 |
 | [libcanard](https://github.com/OpenCyphal/libcanard) | `120600375535b6a383fbe99a9d77c04b7a65e81a` | Vendored libcanard 5.0 from this pin, linked for actual Cyphal/CAN 1.1; MIT |
-| [OpenSimGear protocol](https://github.com/opensimgear/protocol) | maintained `protocol/cyphal/` snapshot | Active OpenSimGear DSDL application types and transport wrapper; license selection pending |
+| [OpenSimGear protocol](https://github.com/opensimgear/protocol) | maintained `protocol/cyphal/` snapshot | Active OpenSimGear DSDL application types and transport wrapper; no project license grant is declared |
 | [Nunavut](https://github.com/OpenCyphal/nunavut) | 2.3.1 | Generated C serialization support; MIT, preserved `generated/NUNAVUT_LICENSE.rst` |
 | [Regulated DSDL](https://github.com/OpenCyphal/public_regulated_data_types) | `86e2f332419ff015f4cc9f1bb7843b02d5f7a5ed` | Standard Heartbeat and GetInfo generated bindings; MIT, preserved `shared-cyphal/vendor/REGULATED_DSDL_LICENSE` |
 
-New OpenSimGear code and common firmware retain the repositories' pending license
-selection. The Arm GNU toolchain also supplies newlib/libgcc runtime objects;
-include the applicable toolchain notices when packaging future binaries. CI
+No project license grant is declared for new OpenSimGear code and common firmware.
+The Arm GNU toolchain also supplies newlib/libgcc runtime objects;
+include the applicable toolchain notices when packaging binaries. CI
 performs compile checks only and does not distribute firmware artifacts.
 
 

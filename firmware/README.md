@@ -146,7 +146,7 @@ Save persists active settings and Apply and save persists before activation.
 Mapping/calibration/name changes use the same C handlers on hardware and the
 native emulator. See the protocol repository's
 [`serial/runtime-configuration.md`](https://github.com/opensimgear/protocol/blob/main/serial/runtime-configuration.md)
-for the child-command grammar. Firmware updates remain future work.
+for the child-command grammar.
 
 Settings activation renews the CAN lease even when HID shape is unchanged.
 Registered profile changes refresh the existing pending slot; explicit gateway

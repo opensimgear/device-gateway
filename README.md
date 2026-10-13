@@ -30,8 +30,8 @@ chunks use the current module identity, boot session, CAN source, lease and gate
 epoch. A changed module profile updates its existing pending slot; explicit gateway
 Apply saves it and reconnects USB. Profiles include control counts, axis usages
 and neutral values. The independent native simulations link these production C
-handlers and test the complete Cockpit flow before hardware assembly. Outputs
-and firmware updates remain future work.
+handlers and test the complete Cockpit flow before hardware assembly.
+Implementation and qualification work is tracked in the [GitHub project](https://github.com/orgs/opensimgear/projects/2).
 
 ## Independent simulation
 
@@ -118,6 +118,6 @@ Static checks and cross-compilation establish source-level behaviour. No gateway
 
 [Protocol](https://github.com/opensimgear/protocol), [firmware-common](https://github.com/opensimgear/firmware-common), [device-template](https://github.com/opensimgear/device-template), [Cockpit](https://github.com/opensimgear/cockpit), and the [website](https://github.com/opensimgear/opensimgear.github.io) own their respective shared definitions and implementations. This gateway uses pinned common firmware dependencies; a checked-in shared Cyphal snapshot tracks the canonical protocol repository.
 
-License selection for new OpenSimGear firmware and electronics remains pending. Included KiCad library data retains its [upstream license](electronics/boards/gateway/0.1.0/LICENSE-KICAD.md), and firmware dependencies retain their upstream notices. No public USB VID/PID allocation is claimed.
+No license grant is implied for newly authored OpenSimGear firmware and electronics. Included KiCad library data retains its [upstream license](electronics/boards/gateway/0.1.0/LICENSE-KICAD.md), and firmware dependencies retain their upstream notices. No public USB VID/PID allocation is claimed.
 
 PCB version **0.1.0** stays fixed while pre-live; see [PCB versioning](electronics/VERSIONING.md).
