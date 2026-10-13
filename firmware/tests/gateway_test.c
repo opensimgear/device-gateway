@@ -416,6 +416,24 @@ static void action_test(void) {
     assert(!osg_gateway_config_start(&transaction,&g,&request,3));
     osg_gateway_config_cancel(&transaction);
     assert(!transaction.busy && !transaction.action);
+    assert(osg_gateway_cockpit_parse("cockpit 12 65536 events 00000000000000000000000000000001 100 read 1 0",&request));
+    assert(request.action==OSG_GW_COCKPIT_EVENTS);
+    assert(!osg_gateway_config_start(&transaction,&g,&request,4));
+    assert(transaction.events && !transaction.action && !strcmp(transaction.command,"events read 1 0"));
+    const char event_reply[]="OK\n{\"ok\":false,\"error\":\"eventGap\"}";
+    response=transaction.route;response.type=OSG_GW_CONFIG_RESPONSE;response.config_total=(uint16_t)strlen(event_reply);
+    for(unsigned offset=0;offset<strlen(event_reply);offset+=OSG_GW_CONFIG_CHUNK_SIZE) {
+        response.config_offset=(uint16_t)offset;
+        unsigned remaining=(unsigned)strlen(event_reply)-offset;
+        response.config_length=(uint8_t)(remaining>OSG_GW_CONFIG_CHUNK_SIZE ? OSG_GW_CONFIG_CHUNK_SIZE : remaining);
+        memcpy(response.config_data,event_reply+offset,response.config_length);
+        assert(osg_gateway_config_receive(&transaction,&g,&response));
+    }
+    assert(osg_gateway_config_result(&transaction,&error,&json) && !error);
+    assert(osg_gateway_cockpit_events_response(&g,"0123456789abcdef01234567",12,error,json,output,sizeof output));
+    assert(strstr(output,"\"targetEvents\":{\"ok\":false") && !strstr(output,"targetAction") && !strstr(output,"targetConfig"));
+    assert(!osg_gateway_cockpit_events_response(&g,"0123456789abcdef01234567",12,error,json,output,10) && !output[0]);
+    assert(!osg_gateway_cockpit_parse("cockpit 12 65536 events 00000000000000000000000000000001 100 state\n",&request));
 }
 static void configuration_test(void) {
     osg_gateway_t g; assert(osg_gateway_init(&g,65536,NULL));

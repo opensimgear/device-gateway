@@ -1,4 +1,20 @@
-# Automatic controller lifecycle validation — 2026-10-13
+# Panel-event routing validation — 2026-10-13
+
+The separate event CDC/CAN dispatcher passes all three native suites with
+AddressSanitizer/UndefinedBehaviorSanitizer. Its production parser/forwarder
+coverage is 96.97%/90.41%, above the maintained 70% threshold. Independent
+process acceptance passes 14 checks, including short press/release retention,
+immutable retries, fresh event pages, stale boot/stream guards and disabled/direct
+USB event access. Canonical integration runs the real common collector and
+generic handler over sealed Cyphal envelopes, including ring overflow and
+configuration activation. No settings or descriptor mutation is caused by reads.
+
+Arm GNU 15.3.1 produced ELF/bin/HEX/map with 54,936 bytes application flash and
+107,968 bytes RAM including reserved 16 KiB stack and 512-byte heap. Evidence
+lives under workspace `.research/panel-events/`; no hardware was flashed or
+electrically tested.
+
+## Automatic controller lifecycle validation — 2026-10-13
 
 The CDC3 automatic-enrollment implementation passes the checks below. The older
 baseline follows for historical context; no assembled gateway or Windows game

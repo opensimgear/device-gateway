@@ -107,6 +107,8 @@ cockpit 2 65536 disable 00112233445566778899aabbccddeeff
 cockpit 3 65536 enable 00112233445566778899aabbccddeeff
 cockpit 4 65536 config 00112233445566778899aabbccddeeff 1 claim 17
 cockpit 5 65536 config 00112233445566778899aabbccddeeff 1 get
+cockpit 6 65536 events 00112233445566778899aabbccddeeff 1 state
+cockpit 7 65536 events 00112233445566778899aabbccddeeff 1 read 1 0
 ```
 
 Use the current snapshot epoch. All lifecycle/configuration mutations validate
@@ -133,6 +135,15 @@ partial JSON. DTR opening preserves the first host command; closing flushes inpu
 to the correlated response. Settings use the module's exclusive writer/draft and
 Apply/Save semantics. See [runtime configuration](https://github.com/opensimgear/protocol/blob/main/serial/runtime-configuration.md)
 and [CDC v3](https://github.com/opensimgear/protocol/blob/main/serial/stm32-gateway-v3.md).
+
+`events <identity> <boot> state|read <stream> <after>` forwards a bounded
+read-only panel event command and adds `targetEvents`. It validates the same
+current route/session/lease as settings and actions. Device event pages are
+nonconsuming, at most 16 records from a 64-record ring, and remain reachable
+with HID disabled or direct USB active. State establishes a baseline; mapping
+activation/reboot changes the scope, and overflow reports an explicit gap.
+The gateway does not persist events or infer them from its latest HID report.
+See the [panel event contract](https://github.com/opensimgear/protocol/blob/main/serial/panel-input-events.md).
 
 Enabled profiles stay frozen until `update-profile`; changing an input layout or
 neutral value therefore needs explicit activation with a binding-change warning.

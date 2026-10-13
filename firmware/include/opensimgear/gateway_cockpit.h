@@ -5,7 +5,7 @@ enum { OSG_GW_COCKPIT_RESPONSE_CAPACITY=32768 };
 typedef enum { OSG_GW_COCKPIT_SNAPSHOT, OSG_GW_COCKPIT_REGISTER, OSG_GW_COCKPIT_UNREGISTER,
                OSG_GW_COCKPIT_SAVE, OSG_GW_COCKPIT_APPLY, OSG_GW_COCKPIT_CONFIG,
                OSG_GW_COCKPIT_ENABLE, OSG_GW_COCKPIT_DISABLE, OSG_GW_COCKPIT_FORGET, OSG_GW_COCKPIT_UPDATE_PROFILE,
-               OSG_GW_COCKPIT_ACTION } osg_gateway_cockpit_action_t;
+               OSG_GW_COCKPIT_ACTION,OSG_GW_COCKPIT_EVENTS } osg_gateway_cockpit_action_t;
 typedef struct {
     uint32_t id,epoch;
     osg_gateway_cockpit_action_t action;
@@ -27,4 +27,6 @@ size_t osg_gateway_cockpit_config_response(const osg_gateway_t *,const char uid[
     const char *error,const char *target_config,char *out,size_t capacity);
 size_t osg_gateway_cockpit_action_response(const osg_gateway_t *,const char uid[25],uint32_t id,
     const char *error,const char *target_action,char *out,size_t capacity);
+size_t osg_gateway_cockpit_events_response(const osg_gateway_t *,const char uid[25],uint32_t id,
+    const char *error,const char *target_events,char *out,size_t capacity);
 #endif

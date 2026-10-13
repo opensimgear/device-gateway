@@ -67,7 +67,7 @@ static void cockpit_command(const char *line,uint32_t now) {
     const char *error=NULL;
     bool apply=false;
     if(!osg_gateway_cockpit_parse(line,&request)) error="invalid_request";
-    else if(request.action==OSG_GW_COCKPIT_CONFIG || request.action==OSG_GW_COCKPIT_ACTION) {
+    else if(request.action==OSG_GW_COCKPIT_CONFIG || request.action==OSG_GW_COCKPIT_ACTION || request.action==OSG_GW_COCKPIT_EVENTS) {
         error=osg_gateway_config_start(&configuration,&gateway,&request,now);
         if(!error) return;
     } else error=osg_gateway_cockpit_execute(&gateway,&request,NULL,NULL,&apply);
@@ -78,7 +78,7 @@ static void cockpit_command(const char *line,uint32_t now) {
 static void command(const char *line,uint32_t now) {
     if(!strncmp(line,"cockpit ",8)) cockpit_command(line,now);
     else if(!strcmp(line,"hello") || !strcmp(line,"identity") || !strcmp(line,"info")) identity();
-    else if(!strcmp(line,"help")) append("identity | inventory | registry | enable <32hex> | disable <32hex> | forget <32hex> | update-profile <32hex> | diagnostics | cockpit <id> snapshot | cockpit <id> <epoch> enable <32hex>|disable <32hex>|forget <32hex>|update-profile <32hex>|config <32hex> <boot> <child-command>|action <32hex> <boot> <child-command>\r\n");
+    else if(!strcmp(line,"help")) append("identity | inventory | registry | enable <32hex> | disable <32hex> | forget <32hex> | update-profile <32hex> | diagnostics | cockpit <id> snapshot | cockpit <id> <epoch> enable <32hex>|disable <32hex>|forget <32hex>|update-profile <32hex>|config <32hex> <boot> <child-command>|action <32hex> <boot> <child-command>|events <32hex> <boot> <child-command>\r\n");
     else if(!strcmp(line,"inventory")) {
         identity();
         for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) {
@@ -214,7 +214,8 @@ int main(void) {
         uint32_t config_id=configuration.route.sequence;
         if(osg_gateway_config_result(&configuration,&config_error,&config_json)) {
             char uid[25]; board_uid_hex(uid);
-            response_size=configuration.action ?
+            response_size=configuration.events ?
+                osg_gateway_cockpit_events_response(&gateway,uid,config_id,config_error,config_json,response,sizeof response) : configuration.action ?
                 osg_gateway_cockpit_action_response(&gateway,uid,config_id,config_error,config_json,response,sizeof response) :
                 osg_gateway_cockpit_config_response(&gateway,uid,config_id,config_error,config_json,response,sizeof response);
             if(!response_size) append("{\"id\":%lu,\"ok\":false,\"error\":\"response_overflow\",\"state\":null}\r\n",(unsigned long)config_id);

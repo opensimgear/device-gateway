@@ -204,7 +204,7 @@ static void command(const char *line) {
     }
     osg_gateway_cockpit_request_t request={0}; const char *error=NULL,*json=NULL; bool apply=false;
     if(!osg_gateway_cockpit_parse(line,&request)) error="invalid_request";
-    else if(request.action==OSG_GW_COCKPIT_CONFIG || request.action==OSG_GW_COCKPIT_ACTION) {
+    else if(request.action==OSG_GW_COCKPIT_CONFIG || request.action==OSG_GW_COCKPIT_ACTION || request.action==OSG_GW_COCKPIT_EVENTS) {
         error=osg_gateway_config_start(&simulation.config,&simulation.gateway,&request,simulation.now);
         if(!error) {
             while(simulation.config.busy && !simulation.config.complete && !stopped) {
@@ -214,7 +214,8 @@ static void command(const char *line) {
             assert(osg_gateway_config_result(&simulation.config,&error,&json));
         }
     } else error=osg_gateway_cockpit_execute(&simulation.gateway,&request,NULL,NULL,&apply);
-    size_t n=request.action==OSG_GW_COCKPIT_ACTION ?
+    size_t n=request.action==OSG_GW_COCKPIT_EVENTS ?
+        osg_gateway_cockpit_events_response(&simulation.gateway,gateway_uid,request.id,error,json,simulation.response,sizeof simulation.response) : request.action==OSG_GW_COCKPIT_ACTION ?
         osg_gateway_cockpit_action_response(&simulation.gateway,gateway_uid,request.id,error,json,simulation.response,sizeof simulation.response) :
         osg_gateway_cockpit_config_response(&simulation.gateway,gateway_uid,request.id,error,json,simulation.response,sizeof simulation.response);
     if(n) fputs(simulation.response,response_output);
