@@ -198,7 +198,7 @@ def audit_design(components, nets, pin_nets, bom):
 
 
 def main():
-    directory = Path(__file__).resolve().parents[1]
+    directory = Path(__file__).resolve().parents[1] / "electronics/boards/gateway/0.1.0"
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--netlist", type=Path, default=directory / "review/netlist.xml")
     parser.add_argument("--bom", type=Path, default=directory / "bom.csv")

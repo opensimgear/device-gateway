@@ -14,7 +14,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('project', type=Path, help='Destination KiCad project directory')
 parser.add_argument('--replace', action='store_true', help='Replace an existing, different footprint')
 args = parser.parse_args()
-source = Path(__file__).resolve().parents[1] / 'OpenSimGear.pretty' / NAME
+source = Path(__file__).resolve().parents[1] / 'electronics/boards/gateway/0.1.0/OpenSimGear.pretty' / NAME
 destination = args.project.resolve() / 'OpenSimGear.pretty' / NAME
 if destination.exists() and destination.read_bytes() != source.read_bytes() and not args.replace:
     parser.error('Destination differs. Review it before using --replace.')

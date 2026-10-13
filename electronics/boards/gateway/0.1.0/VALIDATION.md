@@ -8,10 +8,10 @@ This is an unassembled prototype design. Static CAD checks pass; no hardware mea
 | Native PCB DRC, filled zones, all track errors | 0 violations and 0 unconnected items; [report](review/drc.rpt). |
 | Schematic/PCB parity | 0 issues in native DRC. |
 | Independent circuit review | Exact MCU/USB/CAN pins, 4P4C numbered drawing, supply diode/TVS direction and source-OR checked. LM66100 equal-input shutdown risk corrected using TI Figure 17 status/pull-up priority topology; F1 changed to 30 V rated 1206L020/30YR. |
-| Netlist/BOM intent audit | 149 checks pass with `tools/audit-netlist.py`, including connector mapping, protection, supply OR, MCU and reset defaults. |
+| Netlist/BOM intent audit | 149 checks pass with `python3 tools/audit-netlist.py` from the repository root, including connector mapping, protection, supply OR, MCU and reset defaults. |
 | Exports | Matching schematic PDF, front/back SVG, 1:1 assembly PDF, Gerber X2 copper/mask/paste/silk/outline, separate PTH/NPTH Excellon and PDF drill maps, BOM and positions CSV. |
 
-Run `tools/check-and-export.sh` with KiCad 10 available to repeat checks and refresh exports. Zone filling and schematic parity are required after every routing change. On this macOS host KiCad's zone-update CLI calls require screen access: the sandboxed wxWidgets call otherwise crashes at `wxGetMousePosition`. Native DRC was run with local display access, while ordinary file edits/export operations stayed in the workspace. The complete pre-routing revision was backed up and the final source is the editable native CAD, not a rendered image.
+Run `sh tools/check-and-export.sh 0.1.0` from the repository root with KiCad 10 available to repeat checks and refresh exports. Zone filling and schematic parity are required after every routing change. On this macOS host KiCad's zone-update CLI calls require screen access: the sandboxed wxWidgets call otherwise crashes at `wxGetMousePosition`. Native DRC was run with local display access, while ordinary file edits/export operations stayed in the workspace. The complete pre-routing revision was backed up and the final source is the editable native CAD, not a rendered image.
 
 Inherited ignored checks cover missing courtyards (mechanical holes), endpoint centering on vias, tuning-profile geometries, footprint filter matches and footprint/pad technology classification. They are listed in the report. Electrical shorts, spacing, holes, unrouted items, dangling copper, silkscreen and schematic parity are checked; no DRC issue exclusions were added to hide routing faults.
 
