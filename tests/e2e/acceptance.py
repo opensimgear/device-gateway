@@ -1,0 +1,355 @@
+#!/usr/bin/env python3
+"""Exercise this gateway's production CDC/CAN flow against independently built JSON devices."""
+import argparse
+import json
+import os
+from pathlib import Path
+import select
+import signal
+import socket
+import subprocess
+import tempfile
+import time
+import uuid
+
+
+def report_bytes(descriptor):
+    """Derive each report's byte length from HID items independently of firmware."""
+    raw = bytes.fromhex(descriptor)
+    offset = size = count = report = 0
+    bits = {}
+    while offset < len(raw):
+        prefix = raw[offset]
+        offset += 1
+        length = prefix & 3
+        length = 4 if length == 3 else length
+        assert prefix != 254 and offset + length <= len(raw), 'Malformed HID descriptor'
+        value = int.from_bytes(raw[offset:offset + length], 'little')
+        offset += length
+        if prefix == 0x75:
+            size = value
+        elif prefix == 0x95:
+            count = value
+        elif prefix == 0x85:
+            report = value
+        elif prefix & 0xfc == 0x80:
+            bits[report] = bits.get(report, 0) + size * count
+    return {number: (length + 7) // 8 for number, length in bits.items()}
+
+
+class Node:
+    def __init__(self, arguments, directory, name):
+        self.error_path = directory / (name + '.stderr')
+        self.error = self.error_path.open('w')
+        self.process = subprocess.Popen(list(map(str, arguments)), stdin=subprocess.PIPE,
+                                        stdout=subprocess.PIPE, text=True, stderr=self.error)
+        self.sequence = 0
+
+    def admin(self, operation):
+        self.sequence += 1
+        self.process.stdin.write(f'sim {self.sequence} {operation}\n')
+        self.process.stdin.flush()
+        assert select.select([self.process.stdout], [], [], 10)[0], f'Admin timeout: {operation}'
+        line = self.process.stdout.readline()
+        assert line, self.error_path.read_text()
+        result = json.loads(line)
+        assert result['id'] == self.sequence and result['ok'], result
+        return result['simulation']
+
+    def stop(self, abrupt=False, expected=0):
+        if self.error.closed:
+            return
+        if self.process.poll() is None:
+            self.process.send_signal(signal.SIGKILL if abrupt else signal.SIGTERM)
+        code = self.process.wait(timeout=5)
+        self.error.close()
+        self.process.stdin.close()
+        self.process.stdout.close()
+        if not abrupt:
+            assert code == expected, self.error_path.read_text()
+
+    def rejected(self, message):
+        assert self.process.wait(timeout=5) != 0, 'Duplicate instance unexpectedly started'
+        code = self.process.returncode
+        self.stop(expected=code)
+        assert message in self.error_path.read_text(), self.error_path.read_text()
+
+
+class CDC:
+    def __init__(self, uid, log):
+        self.advertisement = Path(f'/tmp/opensimgear-{os.geteuid()}/gateways/{uid}.json')
+        self.connection = None
+        self.buffer = b''
+        self.sequence = 1000
+        self.epoch = 0
+        self.log = log
+
+    def close(self):
+        if self.connection:
+            self.connection.close()
+        self.connection = None
+        self.buffer = b''
+
+    def connect(self):
+        self.close()
+        advertisement = json.loads(self.advertisement.read_text())
+        assert advertisement['protocol'] == 2 and advertisement['role'] == 'gateway'
+        port = advertisement['tcpPort']
+        assert isinstance(port, int) and 0 < port <= 65535
+        self.connection = socket.create_connection(('127.0.0.1', port), timeout=6)
+
+    def line(self, command):
+        if not self.connection:
+            self.connect()
+        self.connection.sendall((command + '\n').encode())
+        while b'\n' not in self.buffer:
+            chunk = self.connection.recv(16384)
+            if not chunk:
+                self.close()
+                raise EOFError('CDC detached')
+            self.buffer += chunk
+        line, self.buffer = self.buffer.split(b'\n', 1)
+        reply = line.decode().strip()
+        self.log.write(json.dumps({'command': command, 'reply': reply}) + '\n')
+        self.log.flush()
+        return reply
+
+    def request(self, action, expected=None):
+        self.sequence += 1
+        route = '' if action == 'snapshot' else f'{self.epoch} '
+        result = json.loads(self.line(f'cockpit {self.sequence} {route}{action}'))
+        assert result['id'] == self.sequence and result['error'] == expected, (action, result)
+        assert result['ok'] == (expected is None), result
+        if result.get('state'):
+            self.epoch = result['state']['epoch']
+        return result
+
+    def config(self, identity, boot, command, expected=None):
+        return self.request(f'config {identity} {boot} {command}', expected).get('targetConfig')
+
+    def until(self, predicate, timeout=8):
+        deadline = time.monotonic() + timeout
+        latest = None
+        while time.monotonic() < deadline:
+            try:
+                latest = self.request('snapshot')['state']
+                if predicate(latest):
+                    return latest
+            except (OSError, EOFError):
+                self.close()
+            time.sleep(.025)
+        raise AssertionError(('Gateway state did not converge', latest))
+
+
+def module(state, identity):
+    return next(item for item in state['modules'] if item['identity'] == identity)
+
+
+def acceptance(launch):
+    artifacts = Path(launch['artifacts'])
+    artifacts.mkdir(parents=True, exist_ok=True)
+    directory = Path(tempfile.mkdtemp(prefix='gateway-', dir=artifacts))
+    uid = uuid.uuid4().hex[:24]
+    identities = [uuid.uuid4().hex for _ in range(3)]
+    definitions = []
+    nodes = []
+    events = []
+    def passed(name):
+        events.append(name)
+        print('PASS: ' + name, flush=True)
+    for index, name in enumerate(('pedals', 'button-panel', 'shifter')):
+        definition = json.loads((Path(launch['deviceRepository']) / f'simulation/configs/{name}.json').read_text())
+        definition['identity'] = identities[index]
+        path = directory / f'{name}.json'
+        path.write_text(json.dumps(definition, indent=2) + '\n')
+        definitions.append((path, definition))
+    def start(arguments, name):
+        node = Node(arguments, directory, name)
+        nodes.append(node)
+        return node
+    def gateway_start(state=None, name='gateway'):
+        return start([launch['gatewayBinary'], '--identity', uid,
+                      '--state-dir', state or directory / 'gateway-state'], name)
+    def device_start(index, state=None, name=None):
+        return start([launch['python'], Path(launch['deviceRepository']) / 'simulation/run.py',
+                      '--config', definitions[index][0], '--gateway', uid,
+                      '--state-dir', state or directory / f'device-{index}-state',
+                      '--output-dir', launch['deviceBuild'], '--no-build'], name or f'device-{index}')
+    log = (directory / 'cdc.jsonl').open('w')
+    cdc = CDC(uid, log)
+    outcome = {'ok': False, 'gateway': uid, 'devices': identities, 'checks': events, 'launch': launch}
+    try:
+        devices = [device_start(0)]
+        time.sleep(.15)
+        assert devices[0].process.poll() is None, devices[0].error_path.read_text()
+        assert not cdc.advertisement.exists(), 'Device startup must not invent a gateway'
+        gateway = gateway_start()
+        state = cdc.until(lambda s: len(s['modules']) == 1 and s['modules'][0]['online'])
+        assert state['modules'][0]['identity'] == identities[0]
+        assert f'identity={uid}' in cdc.line('identity')
+        devices += [device_start(1), device_start(2)]
+        state = cdc.until(lambda s: len(s['modules']) == 3 and all(m['online'] for m in s['modules']))
+        assert len({m['sourceNode'] for m in state['modules']}) == 3
+        boots = {m['identity']: m['boot'] for m in state['modules']}
+        initial_sizes = {}
+        for index, identity in enumerate(identities):
+            active = cdc.config(identity, boots[identity], 'get_active')
+            assert active['config']['name'] == definitions[index][1]['name']
+            assert len(active['config']['axes']) == len(definitions[index][1]['inputs'].get('axes', []))
+            assert len(active['config']['buttons']) == len(definitions[index][1]['inputs'].get('buttons', []))
+            assert active['generation'] == active['savedGeneration'] == 1
+            initial_sizes[index + 1] = active['layout']['reportBytes']
+            cdc.request('register ' + identity)
+        assert initial_sizes == {1: 6, 2: 3, 3: 1}, initial_sizes
+        cdc.request('apply')
+        cdc.until(lambda s: s['running'] and not s['needsApply'])
+        initial_descriptor = gateway.admin('inspect')['descriptorHex']
+        assert report_bytes(initial_descriptor) == initial_sizes
+        passed('device-before-gateway, three independent JSON profiles and production descriptors')
+
+        identity = identities[0]
+        boot = boots[identity]
+        writer = 101
+        cdc.config(identity, boot, f'claim {writer}')
+        cdc.config(identity, boot, 'claim 102', 'writer_busy')
+        name = 'Gateway-owned controller ✓'
+        edits = [f'name {writer} {name.encode().hex()}', f'counts {writer} 4 2 1 1 1 1',
+                 f'button {writer} 0 0 0 1', f'button {writer} 1 1 0 1',
+                 f'button {writer} 2 24 1 0', f'button {writer} 3 10 0 0',
+                 f'axis {writer} 0 0 48 100 3900 0 1 1000',
+                 f'axis {writer} 1 1 49 0 4095 32768 0 1200',
+                 f'hat {writer} 0 2 3 4 5', f'encoder {writer} 0 6 7', f'selector {writer} 0 8 9']
+        for edit in edits:
+            cdc.config(identity, boot, edit)
+        draft = cdc.config(identity, boot, 'get')
+        assert draft['valid'] and draft['dirty']
+        assert draft['layout'] == {'buttons': 9, 'axes': 2, 'hats': 1, 'reportBytes': 7}
+        assert gateway.admin('inspect')['descriptorHex'] == initial_descriptor
+        cdc.config(identity, boot, f'axis {writer} 1 1 49 3000 100 32768 0 0', 'invalid_axis')
+        cdc.config(identity, boot, f'apply_save {writer}')
+        state = cdc.until(lambda s: module(s, identity)['configurationGeneration'] == 2 and s['needsApply'])
+        assert not module(state, identity)['profileMatch']
+        active = cdc.config(identity, boot, 'get_active')
+        saved_config = active['config']
+        assert saved_config['name'] == name and active['generation'] == active['savedGeneration'] == 2
+        assert report_bytes(active['descriptorHex']) == {0: 7}
+        gateway.admin('fault 0')
+        cdc.request('apply', 'flash_save_failed')
+        assert gateway.admin('inspect')['descriptorHex'] == initial_descriptor
+        cdc.request('apply')
+        state = cdc.until(lambda s: s['running'] and not s['needsApply'] and module(s, identity)['profileMatch'])
+        descriptor = gateway.admin('inspect')['descriptorHex']
+        assert report_bytes(descriptor) == {1: 7, 2: 3, 3: 1}
+        assert descriptor != initial_descriptor
+        passed('routed configuration ownership, Unicode name/save, shape change and interrupted gateway apply')
+
+        cdc.config(identity, boot, f'name {writer} {b"Must not survive a failed save".hex()}')
+        devices[0].admin('fault 0')
+        cdc.config(identity, boot, f'apply_save {writer}', 'flash_save_failed')
+        assert cdc.config(identity, boot, 'get_active')['config'] == saved_config
+        cdc.config(identity, boot, f'release {writer}')
+        gateway.admin('drop_reply 1')
+        cdc.config(identity, boot, 'get_active', 'configuration_timeout')
+        gateway.admin('drop_reply 0')
+        assert cdc.config(identity, boot, 'get_active')['config'] == saved_config
+        passed('interrupted device save preserves active settings and CAN configuration timeout recovers')
+
+        devices[0].admin('contact 0 1')
+        devices[0].admin('contact 2 1')
+        devices[0].admin('axis 0 100')
+        devices[0].admin('axis 1 4095')
+        devices[1].admin('contact 0 1')
+        devices[2].admin('contact 2 1')
+        state = cdc.until(lambda s: all(m['hasInput'] for m in s['modules']) and
+                          bytes.fromhex(module(s, identity)['report'])[-4:] == b'\xff' * 4 and
+                          bytes.fromhex(module(s, identities[1])['report'])[0] & 1 and
+                          bytes.fromhex(module(s, identities[2])['report'])[0] & 4)
+        report = bytes.fromhex(module(state, identity)['report'])
+        assert report[0] & 1 and report[2] & 15 == 0
+        for index, device in enumerate(devices):
+            assert device.admin('inspect')['moduleReportHex'] == module(state, identities[index])['report']
+        assert gateway.admin('inspect')['gatewayReports'][0]['hex'] == report.hex()
+        passed('calibrated/inverted axes, buttons and hats reach all registered controller reports')
+
+        devices[0].admin('can_node ' + str(module(state, identities[1])['sourceNode']))
+        state = cdc.until(lambda s: all(m['online'] and m['hasInput'] for m in s['modules']) and
+                          len({m['sourceNode'] for m in s['modules']}) == 3)
+        assert sum(device.admin('inspect')['nodeCollisions'] for device in devices) > 0
+        passed('production Cyphal source-node collision repair')
+
+        gateway_start(name='duplicate-gateway-state').rejected('Flash state is already in use')
+        duplicate_state = directory / 'duplicate-gateway-state'
+        gateway_start(duplicate_state, 'duplicate-gateway-identity').rejected('Gateway identity is already running')
+        assert not (duplicate_state / 'registry.bin').exists()
+        device_start(0, name='duplicate-device-state').rejected('Flash state is already in use')
+        device_start(0, directory / 'duplicate-device-state', 'duplicate-device-identity').rejected('identity already active')
+        assert len(cdc.request('snapshot')['state']['modules']) == 3
+        passed('duplicate device/gateway identities and shared persistent state are rejected')
+
+        before = gateway.admin('inspect')
+        cdc.close()
+        advertisement = json.loads(cdc.advertisement.read_text())
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as slow:
+            slow.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+            slow.settimeout(3)
+            slow.connect(('127.0.0.1', advertisement['tcpPort']))
+            slow.setblocking(False)
+            assert slow.send(b'cockpit 999 snapshot\n' * 600) > 20
+            time.sleep(.5)
+            during = gateway.admin('inspect')
+            assert during['clockMs'] > before['clockMs'] + 300 and during['canFrames'] > before['canFrames']
+            assert all(device.admin('inspect')['acks'] > 0 for device in devices)
+        passed('unread CDC client preserves wall-clock CAN acquisition and input acknowledgments')
+
+        devices[0].stop(abrupt=True)
+        state = cdc.until(lambda s: not module(s, identity)['online'])
+        offline = module(state, identity)
+        assert not offline['hasInput'] and offline['activeSlot'] == 0
+        assert bytes.fromhex(offline['report']) == b'\x00\x00\x08\x00\x00\x00\x80', offline
+        assert sum(m['online'] for m in state['modules']) == 2
+        devices[0] = device_start(0, name='device-0-restarted')
+        state = cdc.until(lambda s: module(s, identity)['online'] and module(s, identity)['boot'] > boot and
+                          module(s, identity)['profileMatch'])
+        new_boot = module(state, identity)['boot']
+        cdc.config(identity, boot, 'get_active', 'stale_module_boot')
+        restored = cdc.config(identity, new_boot, 'get_active')
+        assert restored['config'] == saved_config and restored['generation'] == restored['savedGeneration'] == 2
+        old_epoch = state['epoch']
+        gateway.stop(abrupt=True)
+        cdc.close()
+        gateway = gateway_start(name='gateway-restarted')
+        state = cdc.until(lambda s: s['epoch'] > old_epoch and len(s['modules']) == 3 and
+                          all(m['online'] and m['profileMatch'] for m in s['modules']))
+        assert not state['needsApply'] and {m['activeSlot'] for m in state['modules']} == {0, 1, 2}
+        assert report_bytes(gateway.admin('inspect')['descriptorHex']) == {1: 7, 2: 3, 3: 1}
+        assert cdc.config(identity, new_boot, 'get_active')['config'] == saved_config
+        passed('offline neutral reports, device boot/save recovery and gateway epoch/registry recovery')
+
+        cdc.close()
+        time.sleep(.1)
+        assert all(node.process.poll() is None for node in [gateway, *devices])
+        outcome.update(ok=True, savedConfig=saved_config, descriptorHex=descriptor, reportHex=report.hex())
+        passed('closing the host connection leaves every firmware process running independently')
+    finally:
+        cdc.close()
+        log.close()
+        for node in reversed(nodes):
+            if not node.error.closed:
+                if node.process.poll() is None:
+                    node.stop()
+                else:
+                    node.stop(expected=node.process.returncode)
+        (directory / 'result.json').write_text(json.dumps(outcome, indent=2) + '\n')
+        print(f'Evidence: {directory}', flush=True)
+    assert outcome['ok']
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--manifest', type=Path, required=True)
+    args = parser.parse_args()
+    acceptance(json.loads(args.manifest.read_text()))
+
+
+if __name__ == '__main__':
+    main()

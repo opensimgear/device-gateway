@@ -17,8 +17,8 @@ jobs:
           ctest --preset native
       - name: Check native Cyphal SocketCAN peer and Cockpit snapshots
         env:
-          OSG_GATEWAY_TEST: ../.research/gateway-native/osg_gateway_test
-          OSG_CYPHAL_PEER_LIBRARY: ../.research/gateway-native/libosg_gateway_peer.so
+          OSG_GATEWAY_TEST: .build/native/osg_gateway_test
+          OSG_CYPHAL_PEER_LIBRARY: .build/native/libosg_gateway_peer.so
         run: python3 -m unittest discover -s tools -p 'test_*.py'
   board-build:
     runs-on: ubuntu-24.04

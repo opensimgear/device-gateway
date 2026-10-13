@@ -1,8 +1,4 @@
-# Keep fetched source clones under .research, as required by workspace policy.
-# This must precede include(FetchContent), which installs a build/_deps default.
-if(NOT DEFINED FETCHCONTENT_BASE_DIR)
-  set(FETCHCONTENT_BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../.research/gateway-deps" CACHE PATH "Dependency clones")
-endif()
+# Dependencies belong to this build, so a standalone checkout is sufficient.
 include(FetchContent)
 include(${CMAKE_CURRENT_LIST_DIR}/common-revision.cmake)
 FetchContent_Declare(firmware_common GIT_REPOSITORY https://github.com/opensimgear/firmware-common.git

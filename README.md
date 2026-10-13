@@ -29,9 +29,44 @@ axis calibration, and apply or persist settings through the gateway. Configurati
 chunks use the current module identity, boot session, CAN source, lease and gateway
 epoch. A changed module profile updates its existing pending slot; explicit gateway
 Apply saves it and reconnects USB. Profiles include control counts, axis usages
-and neutral values. The native emulator links these production C
-handlers and tests the complete Cockpit flow before hardware assembly. Outputs
+and neutral values. The independent native simulations link these production C
+handlers and test the complete Cockpit flow before hardware assembly. Outputs
 and firmware updates remain future work.
+
+## Independent simulation
+
+From this repository, launch the native gateway:
+
+```sh
+python3 simulation/run.py --identity 0123456789abcdef01234567
+```
+
+Start Cockpit normally, then start two or three device processes from
+[device-template/simulation](https://github.com/opensimgear/device-template/tree/main/simulation),
+using the same gateway identity and separate JSON definitions. Devices may start
+before or after the gateway. Cockpit discovers the ordinary gateway endpoint;
+it does not start or configure simulation processes. The gateway owns discovery,
+registration, configuration forwarding and dynamic HID reports. Closing Cockpit
+leaves the processes running. See [the simulation guide](simulation/README.md)
+for state, diagnostics and the optional [Pico implementation](simulation/pico/README.md).
+
+Run integration tests from this repository alone:
+
+```sh
+python3 tests/e2e/run.py --sanitize
+python3 tests/e2e/run.py --sanitize --with-cockpit
+```
+
+The runner clones and initializes required repositories, builds their components,
+and tests three independently configured devices. `--with-cockpit` also clones
+Cockpit and tests its normal Rust adapters. Everything stays under this repository’s
+ignored `.e2e/`; no sibling checkout or parent workspace setup is required. See the
+[E2E guide](tests/e2e/README.md) for source revisions and local development overrides.
+Standalone simulation builds and state stay in `.simulation/`.
+
+The native simulation generates production HID descriptors and input reports,
+with HID delivery completed inside the process. It does not publish devices to
+the host operating system, so simulated controllers do not appear in `hidutil list`.
 
 ## Connectors and power
 
@@ -67,7 +102,7 @@ cmake --preset gateway -DOSG_USB_VID=<your-VID> -DOSG_USB_PID=<your-PID>
 cmake --build --preset gateway
 ```
 
-ELF, BIN, HEX and MAP outputs are placed under `../.research/gateway-arm/`. No command flashes hardware automatically. See the [firmware guide](firmware/README.md) for exact dependency pins, SWD flashing, recovery and CDC commands. See [CAN peer testing](tools/README.md) for an executable matching module peer.
+ELF, BIN, HEX and MAP outputs are placed under `.build/gateway/`. No command flashes hardware automatically. See the [firmware guide](firmware/README.md) for exact dependency pins, SWD flashing, recovery and CDC commands. See [CAN peer testing](tools/README.md) for an executable matching module peer.
 
 - [PCB project, pin map and BOM](electronics/boards/gateway/rev-a/README.md)
 - [Fabrication construction](electronics/boards/gateway/rev-a/FABRICATION.md)

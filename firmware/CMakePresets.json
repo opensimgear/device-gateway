@@ -3,12 +3,12 @@
   "configurePresets": [
     {
       "name": "native", "displayName": "Gateway portable behavior tests",
-      "generator": "Unix Makefiles", "binaryDir": "${sourceDir}/../../.research/gateway-native",
+      "generator": "Unix Makefiles", "binaryDir": "${sourceDir}/../.build/native",
       "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug", "OSG_BUILD_BOARD": "OFF"}
     },
     {
       "name": "gateway", "displayName": "STM32G0B1CB gateway Rev A",
-      "generator": "Unix Makefiles", "binaryDir": "${sourceDir}/../../.research/gateway-arm",
+      "generator": "Unix Makefiles", "binaryDir": "${sourceDir}/../.build/gateway",
       "toolchainFile": "${sourceDir}/cmake/arm-gcc.cmake",
       "cacheVariables": {"CMAKE_BUILD_TYPE": "MinSizeRel", "OSG_BUILD_BOARD": "ON", "OSG_BOARD": "gateway_g0b1cb_rev_a"}
     }

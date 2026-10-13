@@ -52,8 +52,8 @@ def identity(text):
 def load_library(path=None):
     path = path or os.environ.get("OSG_CYPHAL_PEER_LIBRARY")
     if not path:
-        root = Path(__file__).resolve().parents[2]
-        directories = (root / ".research/gateway-native", Path(__file__).resolve().parents[1] / "firmware/build/native")
+        root = Path(__file__).resolve().parents[1]
+        directories = (root / ".build/native",)
         path = next((str(directory / name) for directory in directories
                      for name in ("libosg_gateway_peer.so", "libosg_gateway_peer.dylib", "osg_gateway_peer.dll")
                      if (directory / name).is_file()), None)

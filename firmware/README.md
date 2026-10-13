@@ -26,7 +26,7 @@ cmake --preset native
 cmake --build --preset native --parallel
 ctest --preset native
 cd ..
-OSG_GATEWAY_TEST=../.research/gateway-native/osg_gateway_test python3 -m unittest discover -s tools -p 'test_*.py'
+OSG_GATEWAY_TEST=.build/native/osg_gateway_test python3 -m unittest discover -s tools -p 'test_*.py'
 ```
 
 For the board build, put Arm GNU's `arm-none-eabi-*` tools on PATH. Supply USB
@@ -38,7 +38,7 @@ cmake --preset gateway -DOSG_USB_VID=<your-vid> -DOSG_USB_PID=<your-pid>
 cmake --build --preset gateway --parallel
 ```
 
-Outputs are under the workspace `.research/gateway-arm/` directory as
+Outputs are under the repository `.build/gateway/` directory as
 `osg_gateway.{elf,bin,hex,map}`. Flash the HEX with SWD
 using a programmer configured for **STM32G0B1CB, 128 KiB flash**, preserving the
 last two pages when retaining the registry. Never flash or distribute the
@@ -49,7 +49,7 @@ The build pins firmware-common to commit
 The maintained `shared-cyphal/` snapshot comes from canonical `protocol/cyphal/`
 and supplies generated Nunavut bindings, OpenSimGear DSDL and pinned libcanard 5.0.
 Both native tests and the board target link that actual transport. Dependency
-clones remain under workspace `.research/gateway-deps`. See
+clones remain under the build directory’s `_deps/`. See
 [dependency configuration](cmake/README.md) for local source overrides and
 [shared transport](shared-cyphal/README.md) for generation, pins and provenance.
 
