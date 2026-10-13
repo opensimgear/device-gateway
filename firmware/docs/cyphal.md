@@ -3,9 +3,9 @@
 Gateway and generic-device firmware use canonical generated OpenSimGear DSDL
 and pinned libcanard 5.0. The deployed transport is Cyphal/CAN 1.1 with the
 13-bit subject-ID messages compatible with Cyphal 1.0 tools. Application contract
-version is 3 (`canProtocol=3`); the USB CDC console remains version 2. The former
+version is 3 (`canProtocol=3`); the USB CDC console is version 3. The former
 private CAN FD v1/v2 identifiers and payloads are rejected. Persistent registry
-versions 1 and 2 still load and preserve their stable HID slots.
+versions 1 and 2 still load, preserving descriptor order and report IDs in the new version-3 registry.
 
 The active definitions and subject bindings belong to the protocol repository.
 Each firmware keeps a maintained `shared-cyphal/` snapshot so native and embedded
@@ -30,8 +30,8 @@ by bytes `47 57 54 59`. The existing 24-hex USB serial/CDC identity remains the
 MCU UID. Node information does not expose calibration, settings or update services.
 
 Cyphal CAN node IDs are selected and repaired by libcanard's collision handling.
-The gateway's logical routes 1–10 identify leased devices within one chain;
-permanent registry slots determine HID report IDs. These three addresses are
+The gateway's logical routes 1–32 identify leased devices within one chain;
+remembered controller records store report IDs independently of descriptor order. These three addresses are
 independent. Source CAN node metadata is tied to the announced UID/session/lease.
 Input or Status from a different CAN source is rejected. Source migration renews
 the application lease; colliding UIDs invalidate the previous route until the
@@ -53,11 +53,11 @@ does not repeat flash writes. Unexpected route loss invalidates the writer;
 the lease renewal caused by an authorized Apply preserves that writer. Module
 settings generations are separate from the HID profile revision. Calibration
 endpoints, inversion, deadzone and names do not change the gateway descriptor.
-Axis neutral values belong to the registered profile and require gateway Apply,
+Axis neutral values belong to the registered profile and require explicit update-profile activation,
 even though the descriptor bytes stay the same.
 The announcement's configuration generation renews the CAN lease on every
 settings activation, including unchanged HID shapes, so delayed inputs from
-the previous configuration are rejected without changing registered USB slots.
+the previous configuration are rejected without changing retained controller definitions.
 
 The driver transmits at 500 kbit/s arbitration and 2 Mbit/s data with BRS.
 It receives extended data frames broadly for application subjects, services and
@@ -74,7 +74,7 @@ after their current gateway source expires.
 Input neutralizes after 250 ms without accepted fresh input, and a device goes
 offline after 1500 ms without accepted application presence. Standard Heartbeat
 alone does not renew a route or grant input ownership. Direct USB ownership
-neutralizes the gateway slot until released and fresh input arrives. Only
+neutralizes the gateway controller until released and fresh input arrives. Only
 successful USB interrupt completion creates InputAck, preserving the exact
 immutable submitted report even when newer input arrives while USB is busy.
 Neutral fallback, control GET_REPORT and failed transfers cannot acknowledge pulses.

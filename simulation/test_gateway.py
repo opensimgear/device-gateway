@@ -103,17 +103,20 @@ class GatewayBoundaryTest(unittest.TestCase):
         ad = self.node.ready()
         self.assertEqual(ad['serialNumber'], self.uid)
         self.assertEqual(ad['role'], 'gateway')
-        self.assertEqual(ad['protocol'], 2)
+        self.assertEqual(ad['protocol'], 3)
         self.assertEqual(self.node.advertisement.stat().st_mode & 0o777, 0o600)
         with self.node.connect() as cdc:
             identity = command(cdc, 'identity')
             self.assertIn(f'identity={self.uid}', identity)
-            self.assertIn('protocol=2', identity)
+            self.assertIn('protocol=3', identity)
             snapshot = json.loads(command(cdc, 'cockpit 17 snapshot'))
             self.assertTrue(snapshot['ok'])
             self.assertEqual(snapshot['id'], 17)
             self.assertEqual(snapshot['state']['modules'], [])
-            stale = json.loads(command(cdc, 'cockpit 18 1 apply'))
+            self.assertEqual(snapshot['state']['lifecycle'], 'automatic')
+            self.assertEqual(snapshot['state']['maxModules'], 32)
+            self.assertEqual(self.node.admin('inspect')['descriptorHex'], '')
+            stale = json.loads(command(cdc, 'cockpit 18 1 disable 00000000000000000000000000000001'))
             self.assertEqual(stale['error'], 'stale_epoch')
             self.assertEqual(json.loads(command(cdc, 'sim 19 reboot'))['error'], 'invalid_request')
             self.assertEqual(json.loads(command(cdc, 'x' * 4096))['error'], 'invalid_request')
@@ -177,6 +180,30 @@ class GatewayBoundaryTest(unittest.TestCase):
         with self.node.connect() as cdc:
             self.assertEqual(json.loads(command(cdc, 'cockpit 1 snapshot'))['state']['modules'], [])
 
+    def test_bus_capacity_is_explicit_and_visible(self):
+        broker = json.loads(self.node.bus_advertisement.read_text())
+        target = ('127.0.0.1', broker['port'])
+        peers = []
+        try:
+            for index in range(33):
+                peer = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                peers.append(peer)
+                peer.settimeout(3)
+                identity = uuid.uuid4().bytes
+                packet = bytearray(92)
+                packet[:6] = b'OSGB\x01\x01'
+                packet[12:28] = identity
+                struct.pack_into('<I', packet, 28, os.getpid())
+                peer.sendto(packet, target)
+                self.assertEqual(peer.recv(128)[28], 0 if index < 32 else 2)
+            with self.node.connect() as cdc:
+                state = json.loads(command(cdc, 'cockpit 1 snapshot'))['state']
+            self.assertEqual(state['admissionFailure'], {'identity': identity.hex(), 'error': 'capacity_exceeded'})
+            self.assertGreaterEqual(state['rejectedAnnouncements'], 1)
+        finally:
+            for peer in peers:
+                peer.close()
+
     def test_unread_client_does_not_block_clock_or_shutdown(self):
         cdc = self.node.connect()
         cdc.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
@@ -202,9 +229,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path)
     parser.add_argument('--common-source', type=Path)
+    parser.add_argument('--artifacts-dir', type=Path)
     args = parser.parse_args()
     BINARY = args.binary.resolve() if args.binary else build(common=args.common_source, sanitize=True)
-    parent = REPOSITORY / '.simulation' / 'test-runs'
+    parent = args.artifacts_dir or REPOSITORY / '.simulation' / 'test-runs'
     parent.mkdir(parents=True, exist_ok=True)
     ARTIFACTS = Path(tempfile.mkdtemp(prefix='gateway-', dir=parent))
     print(f'Artifacts: {ARTIFACTS}', flush=True)

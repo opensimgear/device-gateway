@@ -4,11 +4,11 @@ The v0.1.0 target is `gateway_g0b1cb_v0_1_0`: STM32G0B1CBT6, USB-C device,
 one CAN FD controller/transceiver, two parallel **4P4C** chain jacks, and a
 center-positive 12 V barrel input. The jacks share one bus and carry
 pin 1 BUS12V, pin 2 CANH, pin 3 CANL, pin 4 GND. Moving a module between the
-jacks does not change its identity or controller slot.
+jacks does not change its identity or controller order.
 
 The firmware builds a real STM32 ELF, binary and Intel HEX. It has active CAN FD,
 USB HID plus CDC, discovery, bounded chain-local logical route allocation, an identity-based
-registry, persistent storage, routed runtime module configuration and explicit USB layout application. It uses the
+registry, persistent storage, routed runtime module configuration and automatic saved USB layout activation. It uses the
 [Cyphal/CAN application contract](docs/cyphal.md), shared with the generic
 module firmware and Cockpit’s native STM32 adapter. The Pico simulator remains
 a separate transport and does not implement this console.
@@ -44,8 +44,7 @@ using a programmer configured for **STM32G0B1CB, 128 KiB flash**, preserving the
 last two pages when retaining the registry. Never flash or distribute the
 unallocated `0xFFFF:0xFFFF` identifiers used solely by CI compile checks.
 
-The build pins firmware-common to commit
-`35e06787fb9696977fe92d20c5ff5afc1e3e1ebf` for TinyUSB, ST HAL and CMSIS.
+The build pins firmware-common in [`cmake/common-revision.cmake`](cmake/common-revision.cmake) for TinyUSB, ST HAL and CMSIS.
 The maintained `shared-cyphal/` snapshot comes from canonical `protocol/cyphal/`
 and supplies generated Nunavut bindings, OpenSimGear DSDL and pinned libcanard 5.0.
 Both native tests and the board target link that actual transport. Dependency
@@ -53,107 +52,93 @@ clones remain under the build directory’s `_deps/`. See
 [dependency configuration](cmake/README.md) for local source overrides and
 [shared transport](shared-cyphal/README.md) for generation, pins and provenance.
 
-## USB and registered controllers
+## USB controllers and remembered devices
 
-The MCU's 96-bit factory UID is the stable 24-hex-character gateway identity and
-USB serial number. The CDC `identity` response includes the discriminator
-`gatewayType=stm32-can-gateway protocol=2 canProtocol=3 firmware=0.3.0`. Module identities are separate
-16-byte values printed as 32 hexadecimal digits.
+The MCU's 96-bit UID is the stable 24-hex gateway identity and USB serial.
+The CDC handshake is `gatewayType=stm32-can-gateway protocol=3 canProtocol=3 firmware=0.4.0`.
+Module UUIDs are separate 16-byte values printed as 32 hex digits.
 
-There are ten permanent registry slots, each retaining its module identity and
-profile. One HID interface contains a standard joystick top-level application
-collection per occupied slot; report ID is slot index plus one. Reports contain
-up to 128 buttons, four packed four-bit hats and eight unsigned 16-bit axes.
-Reports pack buttons first, then hats (8 means neutral), then little-endian axes. An empty registry has a vendor
-management collection, report ID 11, and no joystick. HID descriptors change
-only on explicit `apply` or reboot after `save`; discovery and temporary loss
-do not re-enumerate USB. Registered modules that are absent, stale, directly USB
-owned or profile mismatched produce their configured neutral values.
+The gateway remembers up to 32 identities, with independent enabled state,
+explicit HID report ID and position in the enabled controller order. Unknown
+valid CAN identities enable and append automatically without Cockpit. Enabled
+offline devices remain enumerated with their stored neutral reports. Disable
+removes a collection but persists the identity/disabled choice; Enable appends it
+at the end; Forget is accepted only while offline and removes the remembered
+record. Repeated announcements and gateway boot respect explicit disable.
 
-The single interface fits the STM32 full-speed endpoint budget. OS/game mapping
-of multiple collections must be checked on Windows, Linux and macOS; this layout
-is not equivalent to the Pico simulator's multiple HID interfaces. USB attaches
-only while PB0 senses VBUS. Detach, reset, suspend and resume invalidate input;
-a fresh CAN input sequence is required before active reports resume.
+One HID interface contains a standard joystick top-level collection for each
+enabled identity, retaining up to 128 buttons, four packed hats and eight 16-bit
+axes per profile. Reports pack buttons, hats (8 neutral), then little-endian axes.
+Zero enabled identities use CDC-only enumeration with no HID placeholder or
+permanent management collection. Direct USB ownership, stale input, missing
+modules or an observed profile mismatch produce configured neutral HID reports.
+
+Existing descriptor collections remain ordered and unchanged when new ones
+append. Disable/Forget can shift later Windows collection identities, requiring
+rebinding; Enable can assign a returning controller a different collection index.
+Windows' single/multiple collection transition also requires physical testing.
+The gateway preserves USB VID/PID, serial and CDC interface numbers; the HID
+interface remains number 2 whenever present. USB attaches only with VBUS.
+Disconnect, suspend and resume require fresh CAN input before active reports.
 
 ## CDC console
 
-Use a serial terminal with newline-delimited commands. The line buffer is bounded
-at 479 characters, with child configuration commands limited to 383 characters;
-overlong lines are rejected. Replies are buffered without
-blocking the CAN/USB service loop. Example registration flow:
+New identities enroll automatically. The human console provides `identity`,
+`inventory`, `registry`, `diagnostics`, `help`, and these explicit lifecycle actions:
 
 ```text
-identity
-inventory
-register 00112233445566778899aabbccddeeff
-registry
-apply
+disable 00112233445566778899aabbccddeeff
+enable 00112233445566778899aabbccddeeff
+forget 00112233445566778899aabbccddeeff
+update-profile 00112233445566778899aabbccddeeff
 ```
 
-| Command | Result |
-| --- | --- |
-| `identity`, `info`, `hello` | Stable gateway identity, board and protocol |
-| `inventory` | Discovered identities, online/ownership/profile state, node and registry slots |
-| `registry` | Pending and active identities for each permanent slot |
-| `register <32hex>` | Stage the observed online module's identity and current profile |
-| `unregister <32hex>` | Stage removal without renumbering other slots |
-| `save` | Persist the pending registry; activate on `apply` or next boot |
-| `apply` | Persist first, disconnect USB, activate pending layout, rebuild descriptor and reconnect after 250 ms |
-| `diagnostics` | CAN errors/drop counts, queue depth, bus-off recovery and protocol counters |
-| `help` | Command list |
-
-Unregistered modules are visible in inventory but do not become HID controllers.
-A registered module may be directly USB owned; its gateway report stays neutral
-until ownership is released and fresh input arrives. Registration requires an
-online discovery so the stored profile describes the actual module.
+Commands stage intent. The background worker saves it and reconnects USB only
+when the enabled layout changes. `forget` rejects an online device. Disabled
+online devices remain discoverable and configurable; forgotten devices enroll
+as new if they return. Human lifecycle replies use the same JSON schema as
+machine requests. There is no manual Register/Save/Apply onboarding.
 
 ## Cockpit machine console
 
-Cockpit uses correlated, bounded requests alongside the human console:
-
 ```text
 cockpit 1 snapshot
-cockpit 2 65536 register 00112233445566778899aabbccddeeff
-cockpit 3 65536 apply
+cockpit 2 65536 disable 00112233445566778899aabbccddeeff
+cockpit 3 65536 enable 00112233445566778899aabbccddeeff
 cockpit 4 65536 config 00112233445566778899aabbccddeeff 1 claim 17
 cockpit 5 65536 config 00112233445566778899aabbccddeeff 1 get
 ```
 
-Use the epoch returned by the current snapshot rather than the example value.
-All mutations (`register`, `unregister`, `save`, `apply`) require that epoch;
-a stale epoch returns `stale_epoch` without modifying state. Every response is
-one JSON line with `{id,ok,error,state}`. The state contains gateway identity,
-versions, running/layout state and all discovered or retained registered devices.
-Each device includes its node, source node, boot session, configuration generation and lease, complete observed profile, pending/active
-slots, `profileMatch`, `pendingProfileMatch`, input freshness and a report whose
-length matches that observed profile. Missing, stale, directly USB owned,
-unregistered or mismatched devices return neutral values under the observed
-profile. `apply` acknowledges persistence before USB disconnects; the host must
-reconnect to the same gateway UID and query the resulting state.
+Use the current snapshot epoch. All lifecycle/configuration mutations validate
+that epoch; configuration additionally validates the module boot and route.
+Each response is one correlated `{id,ok,error,state}` JSON line. `ok` acknowledges
+staging, not final durable publication. Observe `layoutPending`, `layoutError`,
+`activeGeneration` and `pendingGeneration`; reconnect to the same gateway UID
+and query state without replaying an ambiguous mutation.
+After a renewed lease, `configuration_route_not_ready` rejects configuration
+before dispatch until fresh Input/Status proves the device received its new
+Assignment. Read-only queries can wait for fresh state and retry; mutation commands
+remain single-dispatch.
 
-The receiver preserves a host’s first command when DTR opens so that a write
-arriving with the control-line change is not discarded. Input is flushed on
-close. Requests remain at most 479 characters, configuration children at most
-383 bytes, and JSON responses fit the fixed 12 KiB writer; overflow fails without
-emitting partial JSON. The legacy console commands remain available.
+Each remembered device includes the observed profile/report, CAN route/session,
+`enabled` desired intent, `published` active collection, `descriptorIndex` (-1
+when absent), explicit `reportId` (null when absent), `profileMatch` and input
+freshness. Disabled inventory reports are neutral even during a pending removal.
+`admissionFailure`/`lastRejectedIdentity` expose capacity failures instead of
+silently hiding announcements. The CDC line limit is 479 characters, child
+configuration limit 383 bytes, and response writer 32 KiB; overflow returns no
+partial JSON. DTR opening preserves the first host command; closing flushes input.
 
-`config <identity> <boot> <child>` forwards to the identified module over the
-current CAN route. The resulting JSON adds `targetConfig` for that request,
-including active/draft settings, generations and descriptor bytes. The module
-enforces a 30-second exclusive writer claim; Apply activates validated settings,
-Save persists active settings and Apply and save persists before activation.
-Mapping/calibration/name changes use the same C handlers on hardware and the
-native emulator. See the protocol repository's
-[`serial/runtime-configuration.md`](https://github.com/opensimgear/protocol/blob/main/serial/runtime-configuration.md)
-for the child-command grammar.
+`config <identity> <boot> <child>` forwards configuration and adds `targetConfig`
+to the correlated response. Settings use the module's exclusive writer/draft and
+Apply/Save semantics. See [runtime configuration](https://github.com/opensimgear/protocol/blob/main/serial/runtime-configuration.md)
+and [CDC v3](https://github.com/opensimgear/protocol/blob/main/serial/stm32-gateway-v3.md).
 
-Settings activation renews the CAN lease even when HID shape is unchanged.
-Registered profile changes refresh the existing pending slot; explicit gateway
-Apply persists and activates that profile and reconnects USB. Control counts,
-axis usages and neutral values belong to that profile; a changed neutral requires
-gateway Apply even when descriptor bytes stay the same. Names, raw calibration
-endpoints, inversion and deadzone preserve the registered profile.
+Enabled profiles stay frozen until `update-profile`; changing an input layout or
+neutral value therefore needs explicit activation with a binding-change warning.
+Disabled profiles can refresh without publishing a collection. Settings activation
+still renews the CAN lease independently of unchanged HID shape, preventing
+input from the previous configuration from carrying across activation.
 
 ## CAN service and persistence
 
@@ -183,23 +168,32 @@ neutralize after 250 ms without fresh input; nodes go offline after 1500 ms.
 
 The application owns only the first 124 KiB of flash. Pages at `0x0801F000` and
 `0x0801F800` form a two-page journal. Each record contains a sequence, CRC,
-boot lease-block base and the portable 500-byte registry. New writes use format version 2 with a hat
-count; version 1 records remain readable with zero hats and upgrade on the next
-successful save. The inactive page is
+boot lease-block base and the portable 1,556-byte version-3 registry. Versions 1/2 retain their exact
+500-byte decoder; migration gathers occupied entries in descriptor order while
+preserving their original report IDs. New records remember enabled state and
+independent descriptor order/report ID. The inactive page is
 erased, programmed and read back before its commit doubleword is programmed
 last. Page indexes account for the actual MCU bank configuration. Power failure
 before commit retains the previous complete record.
 
 Before input can run, each boot reserves and persists a new block of 65,536
 lease values. At most 65,535 leases can be issued in one boot; exhaustion rejects
-new allocation until a reboot. Epoch wrap, a boot lease-block write failure, a corrupt
+new allocation until a reboot and exposes `lease_exhausted`. Enable/Disable
+publication renews the affected device's lease and clears its delivery state, so
+the next Assignment rearms device acquisition and discards queued encoder turns.
+The worker checks capacity before save, reserves it after save, and allocates
+monotonically newer leases at publication. Offline identities are included in the
+reservation because they may reconnect before publication. Unchanged announcements
+and metadata-only persistence do not renew leases. Epoch wrap, a boot lease-block write failure, a corrupt
 registry, or two nonblank invalid pages cause a fault with transceiver standby
 and steady LED. Completely erased pages are treated as a virgin device. A
 factory erase resets the lease history: power-cycle the entire module chain
-before reuse, not only the gateway. Every boot/save/apply erases one journal
-page; endurance and interrupted hardware erase/program need bench qualification.
-A failed CDC `save` or `apply` returns an error and keeps the active layout and
-service running; it does not enter the boot fault state.
+before reuse, not only the gateway. Each boot or changed-state transaction erases one journal page. Closely spaced
+changes batch for 100 ms, capped at 500 ms; unchanged announcements cause no
+writes. A failed background save retains the previous active layout, exposes
+`layoutError` and retries after at least one second. Serial backpressure cannot
+delay detach beyond the bounded grace period. Endurance and interrupted hardware
+erase/program still need bench qualification.
 
 The linker uses the guaranteed 128 KiB SRAM region and reserves 16 KiB for stack
 plus 512 bytes for heap, avoiding dependence on the optional additional parity

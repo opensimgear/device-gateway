@@ -94,15 +94,15 @@ static osg_journal_io_t io(flash_t *flash) {
 static bool gateway_send(void *context,const osg_gateway_frame_t *frame) {
     (void)context; return bus_send(frame);
 }
-static bool persist(void *context) {
+static bool persist(void *context,const osg_gateway_registry_t *registry) {
     (void)context; uint8_t record[OSG_GW_REGISTRY_RECORD_SIZE];
-    size_t n=osg_gateway_registry_encode(&simulation.gateway.pending,record,sizeof record);
+    size_t n=osg_gateway_registry_encode(registry,record,sizeof record);
     osg_journal_io_t flash=io(&simulation.registry_flash);
     return n && osg_journal_commit(&flash,record,n,simulation.gateway.epoch);
 }
 static void prepare_descriptor(void) {
     simulation.descriptor_length=osg_gateway_descriptor(&simulation.gateway,simulation.gateway_descriptor,sizeof simulation.gateway_descriptor);
-    assert(simulation.descriptor_length);
+    assert(osg_gateway_registry_valid(&simulation.gateway.active));
 }
 static void boot_gateway(void) {
     osg_cyphal_destroy(&simulation.gateway_can);
@@ -111,7 +111,7 @@ static void boot_gateway(void) {
     if(osg_journal_load(&flash,record,sizeof record,&n,&epoch)) { assert(osg_gateway_registry_decode(record,n,&registry)); restored=&registry; }
     else assert(osg_journal_erased(&flash));
     assert(epoch<=UINT32_MAX-65536U); assert(osg_gateway_init(&simulation.gateway,epoch+65536U,restored));
-    assert(persist(NULL)); assert(osg_cyphal_init(&simulation.gateway_can,&simulation.gateway_identity,simulation.gateway.epoch,
+    assert(persist(NULL,&simulation.gateway.pending)); assert(osg_cyphal_init(&simulation.gateway_can,&simulation.gateway_identity,simulation.gateway.epoch,
         "org.opensimgear.gateway",gateway_send,NULL));
     osg_gateway_config_cancel(&simulation.config); memset(&simulation.layout,0,sizeof simulation.layout);
     prepare_descriptor(); osg_gateway_set_running(&simulation.gateway,!simulation.disconnected);
@@ -136,12 +136,12 @@ static void receive_gateway(const osg_gateway_frame_t *frame) {
 }
 static void tick(void) {
     osg_gateway_tick(&simulation.gateway,simulation.now);
-    osg_gateway_layout_event_t event=osg_gateway_layout_tick(&simulation.layout,simulation.now,
-        !simulation.config.busy && cdc_drained());
+    osg_gateway_layout_event_t event=osg_gateway_layout_service(&simulation.layout,&simulation.gateway,simulation.now,
+        !simulation.config.busy && cdc_drained(),persist,NULL);
     if(event==OSG_GATEWAY_LAYOUT_DETACH) {
         osg_gateway_set_running(&simulation.gateway,false);
-        osg_gateway_apply_layout(&simulation.gateway); prepare_descriptor();
-        publish_gateway(false); detach_cdc();
+        publish_gateway(false); detach_cdc(); osg_gateway_config_cancel(&simulation.config);
+        (void)osg_gateway_activate_prepared(&simulation.gateway,&simulation.layout.target,true,&simulation.layout.activation); prepare_descriptor();
     } else if(event==OSG_GATEWAY_LAYOUT_ATTACH) {
         osg_gateway_set_running(&simulation.gateway,!simulation.disconnected);
         publish_gateway(true);
@@ -149,7 +149,7 @@ static void tick(void) {
     osg_cyphal_tick(&simulation.gateway_can,simulation.now);
     osg_gateway_config_tick(&simulation.config,&simulation.gateway,&simulation.gateway_can,simulation.now);
     if(simulation.gateway.running) for(unsigned slot=0;slot<OSG_GW_MAX_MODULES;slot++) {
-        uint8_t packet[OSG_GW_MAX_REPORT_SIZE+1]; packet[0]=(uint8_t)(slot+1);
+        uint8_t packet[OSG_GW_MAX_REPORT_SIZE+1]; packet[0]=simulation.gateway.active.slots[slot].report_id;
         osg_gateway_delivery_t delivery; osg_gateway_message_t ack;
         size_t n=osg_gateway_delivery_prepare(&simulation.gateway,slot,packet+1,sizeof packet-1,&delivery);
         if(n && osg_gateway_delivery_complete(&simulation.gateway,&delivery,packet,n+1,&ack))
@@ -173,7 +173,7 @@ static void inspect(uint32_t id,bool ok,const char *error) {
     for(unsigned slot=0;slot<OSG_GW_MAX_MODULES;slot++) {
         uint8_t bytes[OSG_GW_MAX_REPORT_SIZE]; size_t size=osg_gateway_report(&simulation.gateway,slot,bytes,sizeof bytes);
         if(!size) continue;
-        fprintf(response_output,"%s{\"reportId\":%u,\"hex\":\"",first?"":",",slot+1);
+        fprintf(response_output,"%s{\"reportId\":%u,\"hex\":\"",first?"":",",simulation.gateway.active.slots[slot].report_id);
         hex(bytes,size); fprintf(response_output,"\"}"); first=false;
     }
     fprintf(response_output,"],\"sourceNode\":%u,\"nodeCollisions\":%u}}\n",
@@ -198,7 +198,7 @@ static void admin(const char *line) {
 }
 static void command(const char *line) {
     if(!strcmp(line,"identity") || !strcmp(line,"hello") || !strcmp(line,"info")) {
-        fprintf(response_output,"gatewayType=stm32-can-gateway protocol=2 canProtocol=3 firmware=0.3.0 board=native-gateway identity=%s epoch=%u maxModules=10\r\n",gateway_uid,simulation.gateway.epoch); fflush(response_output); return;
+        fprintf(response_output,"gatewayType=stm32-can-gateway protocol=3 canProtocol=3 firmware=0.4.0 board=native-gateway identity=%s epoch=%u maxModules=%u\r\n",gateway_uid,simulation.gateway.epoch,OSG_GW_MAX_MODULES); fflush(response_output); return;
     }
     osg_gateway_cockpit_request_t request={0}; const char *error=NULL,*json=NULL; bool apply=false;
     if(!osg_gateway_cockpit_parse(line,&request)) error="invalid_request";
@@ -211,8 +211,7 @@ static void command(const char *line) {
             if(stopped) return;
             assert(osg_gateway_config_result(&simulation.config,&error,&json));
         }
-    } else error=osg_gateway_cockpit_execute(&simulation.gateway,&request,persist,NULL,&apply);
-    if(apply) osg_gateway_layout_schedule(&simulation.layout,simulation.now);
+    } else error=osg_gateway_cockpit_execute(&simulation.gateway,&request,NULL,NULL,&apply);
     size_t n=osg_gateway_cockpit_config_response(&simulation.gateway,gateway_uid,request.id,error,json,simulation.response,sizeof simulation.response);
     if(n) fputs(simulation.response,response_output);
     else fprintf(response_output,"{\"id\":%u,\"ok\":false,\"error\":\"response_overflow\",\"state\":null}\n",request.id);
@@ -330,7 +329,10 @@ static void gateway_packet(const struct sockaddr_in *address,const uint8_t *pack
         }
         if(index<0)index=empty;
         if(duplicate) reply[28]=1;
-        else if(index<0)reply[28]=2;
+        else if(index<0) {
+            reply[28]=2; simulation.gateway.rejected_announcements++;
+            simulation.gateway.rejected_identity=identity; simulation.gateway.admission_error="capacity_exceeded";
+        }
         else {
             local.peers[index]=(peer_t){.used=true,.address=*address,.identity=identity,.seen=simulation.now,.pid=(pid_t)pid};
         }
@@ -363,7 +365,7 @@ static void publish_gateway(bool publish) {
     assert(n>0 && (size_t)n<sizeof temporary);
     int fd=open(temporary,O_WRONLY|O_CREAT|O_EXCL,0600);if(fd<0) die("Could not create gateway advertisement");
     FILE *file=fdopen(fd,"w");if(!file) die("Could not write gateway advertisement");
-    if(fprintf(file,"{\"protocol\":2,\"role\":\"gateway\",\"serialNumber\":\"%s\",\"manufacturer\":\"OpenSimGear\",\"friendlyName\":\"OpenSimGear CAN gateway\",\"endpoint\":\"%s.sock\",\"tcpPort\":%u,\"pid\":%ld}\n",gateway_uid,gateway_uid,local.cdc_port,(long)getpid())<0 || fclose(file)!=0) die("Could not finish gateway advertisement");
+    if(fprintf(file,"{\"protocol\":3,\"role\":\"gateway\",\"serialNumber\":\"%s\",\"manufacturer\":\"OpenSimGear\",\"friendlyName\":\"OpenSimGear CAN gateway\",\"endpoint\":\"%s.sock\",\"tcpPort\":%u,\"pid\":%ld}\n",gateway_uid,gateway_uid,local.cdc_port,(long)getpid())<0 || fclose(file)!=0) die("Could not finish gateway advertisement");
     if(rename(temporary,local.advertisement)<0) die("Could not publish gateway advertisement");
 }
 static void cleanup(void) {

@@ -5,33 +5,45 @@ STM32G0B1 USB-to-CAN FD gateway with **USB-C, two parallel 4P4C powered CAN sock
 ## Implemented prototype
 
 - C firmware for `gateway_g0b1cb_v0_1_0`, with USB HID and CDC, a unique MCU-derived USB serial, and active CAN FD at 500 kbit/s arbitration / 2 Mbit/s data.
-- Discovery and logical route allocation for up to ten module identities. Permanent controller slots store each registered identity and its input profile; unplugging a module preserves its slot and emits configured neutral values.
-- One HID interface with a joystick top-level collection and stable report ID for each registered module. Each profile supports up to eight 16-bit axes, four hats and 128 buttons. Host/game interpretation of multiple collections still needs physical testing.
+- Automatic discovery, enrollment and logical route allocation for up to 32 remembered module identities. New identities append to a persistent ordered controller list; enabled offline devices keep neutral HID collections.
+- One HID interface with a joystick top-level collection and stable report ID for each enabled module. Each profile supports up to eight 16-bit axes, four hats and 128 buttons. Host/game interpretation of multiple collections still needs physical testing.
 - Bounded CAN queues, sequence/lease checks, direct USB input ownership, 250 ms input timeout, 1.5 s presence timeout, and bus-off recovery.
-- CRC-protected registration stored in two independent flash pages with a commit marker written last. Explicit `apply` saves the pending registry and reconnects USB with the new layout.
+- CRC-protected device visibility and controller order stored in two independent flash pages with a commit marker written last. Automatic batched activation saves an exact generation before USB reconnects; explicit Disable/Enable/Remove retain or forget identities as requested.
 - Editable KiCad schematic, PCB, exact-part BOM, local libraries, review and fabrication exports, and a Linux SocketCAN reference peer.
 
 The generic device and gateway now share **Cyphal/CAN**, using generated OpenSimGear
 DSDL types and the actual libcanard 5.0 transport. Standard Heartbeat and GetInfo,
 CAN node-ID autoconfiguration, transfer-ID deduplication and multi-frame reassembly
-run in both firmwares. CAN addresses are separate from the gateway's ten logical
-routes and permanent USB slots. Input acknowledgements still follow actual USB
+run in both firmwares. CAN addresses are separate from the gateway's 32 logical
+routes, persistent descriptor order and explicit report IDs. Input acknowledgements still follow actual USB
 HID completion. The prior private CAN FD v1/v2 frames are incompatible and rejected.
 
-Cockpit desktop uses the correlated CDC v2 adapter with `canProtocol=3` to discover
-devices, stage registration and explicitly apply the saved USB layout. Offline
-slots survive disconnects and gateway restarts. Direct device USB takes ownership
-and leaves the gateway slot neutral. The Pico simulator keeps its own adapter.
-Native behavior/journal tests, actual transport integration and the STM32 target
-cross-build validate source behavior; physical USB/CAN acceptance remains pending.
-Cockpit can also claim a module configuration draft, change input mappings and
-axis calibration, and apply or persist settings through the gateway. Configuration
-chunks use the current module identity, boot session, CAN source, lease and gateway
-epoch. A changed module profile updates its existing pending slot; explicit gateway
-Apply saves it and reconnects USB. Profiles include control counts, axis usages
-and neutral values. The independent native simulations link these production C
-handlers and test the complete Cockpit flow before hardware assembly.
-Implementation and qualification work is tracked in the [GitHub project](https://github.com/orgs/opensimgear/projects/2).
+Cockpit desktop uses the correlated CDC v3 adapter with `canProtocol=3`.
+Enrollment runs in the gateway with Cockpit closed. Enabled devices remain neutral
+controllers while temporarily offline and appear ghosted in Cockpit. Disable
+removes a Windows HID collection while remembering the device and its disabled
+choice; repeated announcements and reboot never undo it. Enable appends at the
+end. Remove forgets an offline identity; rediscovery enrolls it as new. Removing
+published collections warns that remaining game bindings may need updating.
+
+USB exposes only enabled controllers, including their retained offline ghosts.
+There is no permanent management collection or unused joystick placeholder;
+zero enabled controllers means CDC-only enumeration. Existing controller order,
+report IDs and input definitions survive automatic additions, but Windows/game
+binding continuity still requires physical qualification, especially transitions
+between one and multiple collections. Software resource bounds are explicit,
+and excess announcements produce visible capacity diagnostics. Direct device
+USB ownership leaves gateway input neutral. The Pico simulator remains a legacy
+protocol-1 fixture with a separate adapter.
+
+Cockpit can claim a module configuration draft, change input mappings/calibration,
+and apply or persist its settings over the current identity/session/lease-bound
+CAN route. Enabled HID profiles remain frozen until an explicit update-profile
+operation; disabled devices remain configurable. Native behavior/journal tests,
+actual transport integration, independent gateway/device acceptance and the
+STM32 cross-build validate source behavior. Physical USB/CAN acceptance remains
+pending. See the [architecture record](https://github.com/opensimgear/opensimgear.github.io/blob/main/src/content/docs/gear/architecture/usb-hid.md)
+and [GitHub project](https://github.com/orgs/opensimgear/projects/2).
 
 ## Independent simulation
 
@@ -46,7 +58,7 @@ Start Cockpit normally, then start two or three device processes from
 using the same gateway identity and separate JSON definitions. Devices may start
 before or after the gateway. Cockpit discovers the ordinary gateway endpoint;
 it does not start or configure simulation processes. The gateway owns discovery,
-registration, configuration forwarding and dynamic HID reports. Closing Cockpit
+automatic enrollment, configuration forwarding and dynamic HID reports. Closing Cockpit
 leaves the processes running. See [the simulation guide](simulation/README.md)
 for state, diagnostics and the optional [Pico implementation](simulation/pico/README.md).
 
@@ -81,7 +93,7 @@ Both sockets use the same four contacts, numbered by the selected manufacturer's
 
 Use continuity-checked straight-through wiring with CAN_H/L on a qualified twisted pair. Ordinary reversed or coiled handset cords are not qualified CAN cables. Put 120 Ω across contacts 2/3 in a removable endpoint plug at each physical end of the chain; an inline gateway has no termination. A 4P4C jack is commonly called RJ9/RJ10/RJ22 rather than RJ11. This connector choice follows the requested four-position, four-contact standard.
 
-One regulated external 12 V supply feeds each chain through protected gateway injection. USB powers the local gateway electronics and does not energize the chain. The provisional bench budget is **250 mA total for the gateway's 12 V branch and all modules**, at 20–40 °C, with a supply current limit of 0.5 A. The PCB's resettable fuse is not a precision current limiter. Cable resistance, thermal behaviour, short-circuit protection and hot-plug behaviour require measurement. Ten-module software capacity does not establish a ten-module power allowance.
+One regulated external 12 V supply feeds each chain through protected gateway injection. USB powers the local gateway electronics and does not energize the chain. The provisional bench budget is **250 mA total for the gateway's 12 V branch and all modules**, at 20–40 °C, with a supply current limit of 0.5 A. The PCB's resettable fuse is not a precision current limiter. Cable resistance, thermal behaviour, short-circuit protection and hot-plug behaviour require measurement. The 32-identity software bound does not establish a 32-module power allowance.
 
 Use one gateway per CAN/power chain. Multiple gateways connect independently to the host by USB; do not join their CAN or powered trunks. CAN and power pass-through are passive and continue through local MCU reset. Historical six-contact module boards have a different pinout and are incompatible with the new four-contact standard.
 

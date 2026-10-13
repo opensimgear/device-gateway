@@ -10,8 +10,8 @@ gateways. Build success alone is not hardware validation.
 
 The combined `gateway_test.c` runs without the MCU SDK or TinyUSB. The firmware
 CMake native preset builds and registers it with CTest. It covers protocol bounds,
-stale traffic, stable HID slots, ownership, timers, and the persistent registry.
-The source-binding tests use CAN node IDs outside 1–10, reject another source
+stale traffic, stable ordered HID collections, ownership, timers, and the persistent registry.
+The source-binding tests use CAN node IDs independent of application routes1–32, reject another source
 on a valid application route, renew leases after source migration and invalidate
 USB completions during a collision. Historical `can-fd-v1-vectors.json` and
 `can-fd-v2-vectors.json` remain archived protocol fixtures, unused by active tests.
@@ -25,7 +25,7 @@ conformance tests additionally exercise the shared transport and cross-firmware 
 `journal_test.c` tests the actual portable journal implementation using a flash
 backend that permits erase and 1-to-0 doubleword programming. It interrupts every
 erase/program operation, including a partial erase and partial commit doubleword,
-for empty, one-byte, 500-byte registry, and maximum-size payloads. The previous
+for empty, one-byte, legacy500/current1,556-byte registries, and maximum-size payloads. The previous
 committed page must remain loadable after every interrupted write. Tests also
 check readback corruption, CRC fallback, blank versus corrupt nonblank pages,
 bounds and a successful retry. STM32 erase timing, option-bank configuration,
@@ -44,11 +44,11 @@ Delivery tests ensure that successful USB completion acknowledges the immutable
 submitted report rather than newer CAN input, and reject stale run/ownership/
 freshness/session/lease contexts, wrong callback bytes/IDs/lengths and neutral
 fallbacks. Machine console tests cover decimal overflow, guarded mutation epochs,
-persistence failure before apply and bounded JSON output.
+persistence failure before automatic activation and bounded JSON output.
 Configuration tests additionally reject stale boot/epoch/source/lease/request
 contexts and reordered/duplicate reply chunks, and verify response-drain and
 250 ms descriptor reconnect boundaries. The shared transport suite covers all
-seven subjects across ten source nodes within its fixed allocator.
+seven subjects plus32-source input/presence load within its fixed allocator.
 
 The adjacent Cockpit native emulator links the production gateway console,
 forwarder, registry/layout, module configuration/acquisition and Cyphal code.
@@ -58,7 +58,13 @@ flash, cached replies and process restart. See
 `cockpit/simulator/native-gateway/README.md` in the sibling checkout.
 
 `osg_gateway_test --cockpit-vectors` emits actual formatter responses for
-discovery, pending registration, maximum active input, direct USB, offline slots,
+discovery, pending automatic enrollment, maximum active input, direct USB, offline retained controllers,
 stale epoch and profile changes. Cockpit Rust tests consume their canonical
 fixtures. The Python suite also parses fresh C responses and verifies report
 length/neutral values against each returned observed profile.
+
+Automatic lifecycle tests cover append-only descriptor prefixes, persistent disable across announcement/reboot, re-enable at the end, offline forget/rediscovery, no HID placeholder, batched exact saved generations, late discovery during detach, save failure/backoff/reversion, neutral staged-disable inventory, and bounded serial backpressure.
+Publication tests additionally reject old input and completions, reserve the last
+lease capacity against intervening announcements, handle offline return and late
+boot renewal, preserve monotonically increasing assignments, and diagnose lease
+exhaustion before saving a layout that cannot be activated.

@@ -1,130 +1,168 @@
 # Portable gateway core
 
 `gateway.c`, `gateway_registry.c`, `gateway_journal.c`, `gateway_cockpit.c`,
-`gateway_config.c` and `gateway_layout.c` are allocation-free C11
-and have no MCU, RTOS, TinyUSB or host-library dependency. The STM32 board
-adapts CAN FD frames, time, USB, and persistent storage around these interfaces.
-All mutation belongs to a single event loop; callbacks must not mutate the core
-concurrently. Rejected frames are counted and do not refresh their source's health.
+`gateway_config.c` and `gateway_layout.c` are allocation-free C11. The STM32 and
+native simulation adapt CAN frames, USB, time and persistent storage around the
+same code. One event loop owns mutations; callbacks must not modify the core
+concurrently. Rejected frames do not refresh their source's health.
 
-Initialize with a valid saved registry and a freshly reserved persisted lease
-block. Every saved identity occupies one of 10 slots. Discoveries allocate chain
-logical routes independently of Cyphal CAN node IDs; temporary absence, moving between the two ports, or
-allocation order does not move the registered identity's HID slot. Registered
-identities reserve inventory capacity even while unplugged. Offline unregistered
-discoveries can be replaced when the bounded inventory fills.
+## Remembered devices and controller order
 
-`osg_gateway_register()` stages the observed online module's profile in the
-pending registry. Existing identity uses its previous slot; a new identity uses
-the first free slot. `osg_gateway_unregister()` stages removal without compacting
-other slots. Profiles comprise buttons, axis usages, neutrals and revision; neutral
-values are part of the registered layout. A staged change affects only pending
-state. `osg_gateway_needs_apply()` compares effective profiles and identities,
-not the generation counter. A valid new announcement from an already registered
-module refreshes its pending profile in the same slot. The active profile stays
-fixed until explicit gateway Apply.
+Initialize with a valid saved registry and a newly persisted lease block.
+Unknown valid announcements automatically enable their identity and append its
+HID collection. Up to 32 identities, routes and enabled controllers are supported.
+Remembered records store an explicit report ID and enabled descriptor order;
+record storage indexes and CAN routes are independent of both. Historical names
+`slots`/`find_slot` in the C API refer to record storage, not user-assigned slots.
 
-For an explicit layout apply, first save the pending registry successfully, then
-disconnect USB, call `osg_gateway_apply_layout()`, rebuild the HID descriptor,
-and reconnect USB. Applying stops input; the board starts again after USB mounts
-and requires fresh CAN input. USB must keep returning the old descriptor until it has disconnected.
-Offline slots remain present and produce their configured neutral values.
+Enabled devices retain their collection while offline, producing the stored
+neutral report. Cockpit shows these as ghosted; Windows still sees an attached
+neutral controller. Moving CAN source or connector, reconnecting, and reboot do
+not reorder an existing identity. Explicit Disable persists the disabled choice
+and removes its collection. Repeated announcements and reboot never re-enable
+it. Enable appends at the end. Forget rejects online identities and removes the
+remembered record; its later announcement enrolls as new.
 
-There is one HID interface with a joystick top-level application collection per
-occupied slot. Report ID is slot index plus 1; no slots are renumbered automatically.
-The descriptor uses standard joystick, button and axis usages, with no proprietary
-input fields. The full maximum profile has 35 on-wire bytes including its report ID,
-well below the 64-byte full-speed interrupt packet. Hosts may expose top-level
-collections differently; binding stability needs physical Windows/Linux/macOS
-validation. There is no claim of equivalence to the simulator's multiple HID
-interfaces. An empty registry exposes a one-byte vendor management collection
-with report ID 11 and no joystick. The board supplies one zero byte for this
-placeholder when queried.
+Enabled control profiles remain frozen until explicit `update-profile`, while
+disabled profiles may refresh from announcements without publishing anything.
+Control counts, axis usages, neutral values and revision belong to the retained
+profile. Settings generation renews the CAN lease independently of HID shape.
 
-`osg_gateway_report()` supplies a registered slot's payload without its report ID.
-It returns 0 for an empty slot or insufficient output capacity. Active input needs
-running state, an online module, fresh accepted input, matching registered profile,
-and no direct-USB owner. Any other state emits neutral. The application must
-service `osg_gateway_tick()` before scheduling reports, including during USB
-disconnects and CDC activity.
+Inventory and persistence are bounded. Excess announcements return
+`OSG_GW_RX_FULL` and expose a rejection count, identity and admission error through
+CDC3. Offline remembered identities continue to consume capacity until forgotten;
+disabling alone does not release the remembered-device bound.
 
-The persistent codec is an exact 500-byte, versioned little-endian record:
+## Automatic save and USB activation
+
+`osg_gateway_layout_service()` batches changes for 100 ms, with a 500 ms bound
+under continuous arrivals. It validates the target and saves an immutable registry
+snapshot before scheduling a descriptor change. All valid profiles at the
+32-controller limit fit the 4,096-byte descriptor buffer; a compile-time maximum
+size bound and maximum-profile tests enforce that admission guarantee.
+
+For DETACH, the adapter first disconnects USB, invalidates reports/cancels routed
+configuration, calls `osg_gateway_activate_prepared()` with `layout.target` and
+`layout.activation`, and rebuilds the descriptor. USB must
+continue returning its old cached descriptor until disconnected. Reattachment
+follows at least 250 ms later, and live input requires fresh CAN state. Additional
+announcements after save queue another transaction; they cannot enter the saved
+layout. Remembered changes that do not affect any enabled collection save and
+activate without reconnecting or stopping current input.
+
+Before save, the worker checks lease capacity for every identity whose published
+enabled state changes, including offline identities. After save it reserves that
+capacity; announcements cannot spend it. Publication allocates monotonically newer
+leases and clears those devices' input, sequence and delivery state. A fresh
+Assignment makes the device rearm acquisition and discard queued encoder turns,
+preventing turns accumulated while disabled from replaying on re-enable. A late
+boot/profile announcement cannot make the publication lease older than the device's
+latest assignment. Unchanged visibility and metadata changes do not renew leases.
+Exhaustion preserves the active layout, reports `lease_exhausted`, and uses the same
+bounded retry interval.
+
+A save/readback failure leaves the active descriptor and reports unchanged,
+exposes `layoutError`, and retries no more frequently than once per second.
+Reverting a failed change clears the obsolete error. Repeated unchanged
+announcements do not write flash or reconnect. Serial/configuration drain gets a
+100 ms grace; a non-reading host cannot block detach indefinitely (maximum an
+additional second). The worker runs with Cockpit and CDC disconnected.
+
+## HID collections and reports
+
+One HID interface has a joystick top-level collection per enabled identity, in
+persistent descriptor order. Report IDs are explicit retained values, independent
+of collection indexes. Disable/removal can shift later Windows collection numbers;
+re-enable appends. Keep VID/PID, USB serial, CDC interface numbers and existing
+controls stable. Single/multiple collection transitions and game binding behavior
+still require physical Windows/Linux/macOS qualification.
+
+Zero enabled devices produce a zero-length HID descriptor and CDC-only USB
+configuration, without a management collection or joystick placeholder. Nonempty
+layouts use standard joystick/button/axis/hat usages. The maximum profile is
+128 buttons, four hats and eight axes: 34 payload bytes plus the report ID, below
+the 64-byte interrupt packet. Reports pack buttons, four-bit hats (8 neutral),
+then unsigned little-endian axes. Unused bits/nibbles must be zero.
+
+`osg_gateway_report()` addresses a remembered active record. It returns zero for
+an absent/disabled entry or insufficient capacity. Live input requires running
+USB, an online module, fresh accepted input, equal retained/observed profile and
+no direct USB owner; every other condition produces retained neutral values.
+Adapters must service `osg_gateway_tick()` even during CDC activity/USB disconnect.
+
+`osg_gateway_delivery_prepare()` captures the exact eligible report, sequence and
+run/module generations when submitted to USB. `delivery_complete()` checks the
+successful callback's report ID, bytes, length, current identity/profile, route,
+lease, boot, ownership and freshness before creating InputAck. New input cannot
+rewrite the captured sequence. Neutral fallbacks, GET_REPORT and failed transfers
+never qualify; legitimate neutral input does. USB completions from an old layout
+or CAN source are rejected.
+
+## Persistent codec and journal
+
+The version-3 codec is an exact 1,556-byte little-endian record:
 
 | Offset | Contents |
 | --- | --- |
 | 0–3 | ASCII `OGR1` |
-| 4–5 | format version 2 (version 1 remains readable) |
-| 6 | slot count 10 |
-| 7 | zero |
-| 8–11 | registry generation |
-| 12–15 | record size 500 |
-| 16–495 | ten 48-byte slot records |
-| 496–499 | CRC-32/ISO-HDLC over bytes 0–495 |
+| 4–5 | Format version 3 |
+| 6 | Record capacity 32 |
+| 7 | Zero |
+| 8–11 | Registry generation |
+| 12–15 | Record size 1556 |
+| 16–1551 | Thirty-two 48-byte remembered-device records |
+| 1552–1555 | CRC-32/ISO-HDLC over bytes 0–1551 |
 
-Each present slot contains occupied 1, button count, axis count, hat count,
-identity 16 bytes, revision 2 bytes, usages 8 bytes, neutrals 16 bytes, reserved 2 bytes.
-An empty slot is all zero. Unknown versions, wrong length, nonzero reserved bytes,
-invalid capabilities, duplicate identities, or bad CRC are rejected without
-modifying the caller's output. Struct memory is never serialized directly.
+A present record contains flags (occupied bit0, enabled bit1), button/axis/hat
+counts, 16-byte identity, two-byte revision, eight usages, sixteen neutral bytes,
+report ID, and enabled order (255 for disabled). Empty records are all zero.
+Validation rejects unknown versions, sizes/flags, invalid profiles, duplicate
+identities/report IDs, noncontiguous enabled order, bad CRC or reserved data
+without changing the output. Struct memory is never serialized directly.
 
-`osg_gateway_registry_select()` picks the newest valid of two records using
-generation arithmetic; a corrupt/interrupted inactive write preserves the other
-record. Generation differences must remain within half the 32-bit range. A tie
-or ambiguous half-range difference chooses record 0. This codec does not make
-flash writes atomic: the board stores each record on an independent erase page,
-verifies its bytes, and writes a separate commit marker last. The board checks
-that marker before calling the codec. The same journal also preserves the boot
-lease-block base. All hardware flash behavior still requires power-loss testing.
+Exact 500-byte v1/v2 records remain readable. Migration gathers occupied records
+in their old descriptor order and preserves each old report ID (`old index + 1`).
+Version 1 requires zero hats and its original 64-button limit. The next successful
+save writes v3. `registry_select()` picks the newest valid record using wrap-safe
+generation arithmetic, with deterministic tie/half-range handling.
 
-Native tests cover capability and payload bounds,
-sequence/time wrap, direct-USB ownership, stop/start rearming, stale node reuse,
-module timeout, bounded allocation, lease exhaustion, stable descriptors, explicit
-profile application, registry generation wrap, corrupt records and every interrupted
-byte position in an inactive write. These are logic tests, not electrical validation.
+The board journal stores each record on its own 2 KiB erase page, verifies all
+programmed bytes and writes a separate commit marker last. It also stores the boot
+lease-block base. Interrupted inactive writes preserve the previous committed
+page. Erase/program timing, endurance and brownout behavior remain bench tests.
 
-Report order is buttons, packed four-bit hats, then unsigned little-endian axes.
-A neutral used hat has nibble 8; an unused high nibble is zero. The maximum
-profile is 128 buttons, four hats and eight axes, producing 34 payload bytes.
-Cyphal Input/InputAck types carry compact logical route, boot and lease fields;
-full UUIDs remain in Announce/Assignment/Status. The transport source node is
-bound to each UID/lease. Input and Status from another source are rejected.
-A UID moving to a new source needs a fresh announcement and lease, invalidating
-old USB completions. A different UID announcing on an occupied source revokes
-the previous route while CAN node-ID autoconfiguration resolves the collision. The registry writes hat count in slot byte 3;
-legacy version 1 records require that byte zero and retain their 64-button bound.
+## CAN routes and CDC3
 
-`osg_gateway_delivery_prepare()` captures an eligible active input’s exact
-sequence/report and run/module generations at USB submission.
-`osg_gateway_delivery_complete()` validates the callback’s report ID, length and
-bytes, plus the still-current route and generations, before creating an ACK
-message for the shared Cyphal transport.
-New input cannot overwrite the captured sequence, and a heartbeat’s sequence is
-not confused with the last input sequence. USB/run, ownership, stale input,
-lease/session and active profile changes discard old completions. Neutral
-fallbacks never qualify; legitimate neutral input does. The STM32 calls this
-only from TinyUSB’s successful interrupt report callback.
+The shared Cyphal transport supplies complete decoded transfers with source node
+metadata. Logical routes1–32 are not Cyphal CAN node IDs. Announce/Assignment/Status
+carry full UUIDs; Input/InputAck carry compact route, boot and lease fields. Input
+and Status from another source are rejected. Source migration needs a fresh
+announcement/lease and invalidates old USB completions. A different UUID on an
+occupied source revokes the previous route while CAN collision handling repairs
+addresses. Bus recovery resets transport and application leases.
 
-`gateway_cockpit.c` parses bounded machine requests and formats correlated JSON
-snapshots. Mutation epochs must match before staging or flash callbacks run.
-Apply only schedules USB activation after persistence succeeds. The fixed writer
-returns an empty string on overflow, and tests parse fresh maximum snapshots
-independently as JSON. Routed module configuration adds a `targetConfig` object
-to the same correlated response. Configuration requests require the current
-gateway epoch and module boot session, and each fragment/reply binds identity,
-logical node, source node, lease, epoch and request ID. A changed route rejects
-the request; incomplete responses expire after 4 seconds. Fixed buffers bound
-commands to 383 bytes, module responses to 4095 bytes and combined CDC responses
-to 12287 bytes.
+CDC3 supports snapshot, enable, disable, forget, update-profile and routed config.
+Mutations validate the current gateway epoch before staging; child configuration
+also binds boot, identity, source, route, lease, epoch and request ID. Responses
+acknowledge staging. Hosts observe `layoutPending`, active/pending generations and
+publication after reconnect without replaying an ambiguous command.
+`configuration_route_not_ready` prevents dispatch until a post-assignment
+Input/Status confirms the current route. A client can retry a read-only query
+after refreshing state; it must not replay an uncertain mutation.
 
-`gateway_layout.c` waits for the saved Apply response to drain, then emits the
-detach event after a 100 ms grace period. The board disconnects USB, invalidates
-old delivery state, activates the pending registry and rebuilds the descriptor.
-Reattachment follows at least 250 ms later. This same state machine runs in the
-native firmware emulator; the emulator replaces physical CAN/USB/flash only.
+Snapshots retain offline and disabled identities. Each module reports enabled
+intent, active publication, descriptorIndex (-1 absent), reportId (null absent),
+observed profile, route/session, profileMatch and input freshness. Disabled CDC
+inventory is neutral even before its old active collection has been detached.
+Responses fit a 32 KiB fixed writer; overflow returns no partial JSON. Commands
+are at most479 bytes, child commands383 bytes, and module responses4095 bytes.
+Configuration fragments expire after four seconds. Target responses appear only
+once route-guarded assembly is complete.
 
-`osg_gateway_receive()` accepts complete decoded application messages with Cyphal
-source metadata. The board owns a separate `osg_cyphal_t` and feeds raw frames
-through `osg_cyphal_receive()`. It sends Assignment and USB-completion InputAck
-messages through `osg_cyphal_send()`, and services `osg_cyphal_tick()` for standard
-Heartbeat, GetInfo, collision handling and queued retries. Bus recovery resets
-both transport state and application leases. See [the active Cyphal contract](cyphal.md).
+Native tests cover all lifecycle transitions, append descriptor prefixes, sparse
+legacy migration, 32 maximum profiles, saturation diagnosis, neutral ghosts,
+explicit profile update, interrupted saves, saved-generation races, bounded
+batch/backoff/drain and disabled restart. Delivery/route/configuration tests retain
+stale-traffic and ACK semantics. The journal suite interrupts every erase/program
+operation for legacy500, current1556 and maximum1984-byte payloads. These are
+software checks, not physical USB/CAN qualification.

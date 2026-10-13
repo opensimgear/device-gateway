@@ -1,4 +1,36 @@
-# Firmware validation — 2026-10-12
+# Automatic controller lifecycle validation — 2026-10-13
+
+The CDC3 automatic-enrollment implementation passes the checks below. The older
+baseline follows for historical context; no assembled gateway or Windows game
+binding qualification has been performed.
+
+| Check | Result |
+| --- | --- |
+| Portable gateway behavior, flash journal and shared Cyphal transport | 3/3 passed, including AddressSanitizer/UndefinedBehaviorSanitizer |
+| Native Cyphal peer and independently parsed current C snapshots | 10/10 passed |
+| Native gateway boundary, AddressSanitizer/UndefinedBehaviorSanitizer | 7/7 passed, including 33rd-peer capacity diagnosis and CDC-only empty state |
+| Independent production gateway/JSON-device processes, sanitizers | 12 checks passed: auto append, routed configuration, save failure, input/ACK, collision, offline ghosts, disable restart, re-enable append, forget/rediscovery and zero-HID CDC configuration |
+| Maximum 32-device CDC snapshot | 16,003 bytes before optional 4 KiB configuration response; 32 KiB writer |
+| STM32G0B1CB cross-build, Arm GNU 15.3.1 | ELF/bin/HEX/map produced; application warnings treated as errors |
+| Linker bounds | 65,156/126,976 bytes flash; 108,304/131,072 bytes RAM, including reserved 16 KiB stack and 512-byte heap |
+
+Behavior tests preserve existing descriptor prefixes while appending, retain
+explicit report IDs through sparse v1/v2 migration, neutralize staged-disabled
+inventory, and check failed-save reversion, frozen transaction generations,
+batching/backoff and bounded unread-host grace. Journal fault injection covers
+every interrupted operation for the current 1,556-byte registry, legacy 500-byte
+records and maximum 1,984-byte payloads. Disabled metadata changes persist without
+reconnecting USB. Publication tests cover old input/completion rejection, offline
+return and late boot renewal after save, reserved capacity and lease exhaustion
+before persistence.
+
+Evidence lives in workspace `.research/gateway-auto/`. The independent acceptance
+result is `e2e/runs/gateway-76vojdmw/result.json`; native boundary results are under
+`boundary/gateway-8v33wevv/`. These establish software behavior only. Windows
+single/multiple collection transitions, actual game bindings, bus/power limits,
+flash brownout/endurance and stack watermark remain physical acceptance.
+
+## Previous baseline — 2026-10-12
 
 The current gateway source passes the following software checks. No assembled
 gateway, physical CAN adapter or USB host compliance equipment was used.

@@ -22,7 +22,7 @@ python3 simulation/run.py --identity 1234567890abcdef12345678
 
 Start device instances using the commands and JSON examples in the [device-template simulation guide](https://github.com/opensimgear/device-template/tree/main/simulation). Their `--gateway` identity selects which local gateway they join. A device may also start first and wait for its gateway.
 
-Cockpit discovers the gateway normally, then displays devices as they announce themselves. Use Cockpit to configure a device, add its controller, and apply the gateway layout. Closing Cockpit leaves the gateway and devices running. `Ctrl+C` stops this gateway only.
+Cockpit discovers the gateway normally, then displays devices as they announce themselves. New devices automatically enroll, save and publish their controllers even with Cockpit closed. Cockpit configures modules and explicitly enables/disables or forgets remembered devices. Enabled offline ghosts retain neutral reports; disabled identities remain disabled across announcements and restarts. Closing Cockpit leaves the gateway and devices running. `Ctrl+C` stops this gateway only.
 
 ## Build and state
 
@@ -69,7 +69,7 @@ Each reply is one JSON line with the request `id`, `ok`, `error`, and a `simulat
 python3 simulation/test_gateway.py
 ```
 
-`test_gateway.py` builds with AddressSanitizer and UndefinedBehaviorSanitizer, then tests gateway discovery and CDC validation, independent client/process lifetimes, restart persistence, duplicate identity and state locks, CAN admission, malformed bus packets, and unread-client backpressure. Logs and test state live below `.simulation/test-runs/`. An existing build can be selected with `--binary /path/to/osg-gateway-sim`.
+`test_gateway.py` builds with AddressSanitizer and UndefinedBehaviorSanitizer, then tests gateway discovery and CDC validation, independent client/process lifetimes, restart persistence, duplicate identity and state locks, explicit 32-peer CAN admission/overflow diagnostics, malformed bus packets, and unread-client backpressure. Logs and test state live below `.simulation/test-runs/`. An existing build can be selected with `--binary /path/to/osg-gateway-sim`; `--artifacts-dir /path/to/research` keeps test scratch in a chosen directory.
 
 Run `python3 tests/e2e/run.py --sanitize` from the repository root for full integration;
 add `--with-cockpit` to clone and test Cockpit too. See the [E2E guide](../tests/e2e/README.md).
@@ -77,7 +77,7 @@ The repository's E2E runner separately provisions the real device simulation and
 
 ## Local transport contract
 
-Runtime discovery lives in the current user's private `/tmp/opensimgear-<uid>/gateways/` directory. `<gateway-identity>.json` advertises protocol 2, role `gateway`, serial number, process ID, and a loopback TCP port. CDC lines and gateway responses use the same protocol as hardware. Discovery is removed while applying a layout and on orderly exit; clients reject advertisements belonging to dead processes.
+Runtime discovery lives in the current user's private `/tmp/opensimgear-<uid>/gateways/` directory. `<gateway-identity>.json` advertises protocol 3, role `gateway`, serial number, process ID, and a loopback TCP port. CDC lines and gateway responses use the same protocol as hardware. Discovery is removed while applying a layout and on orderly exit; clients reject advertisements belonging to dead processes.
 
 `<gateway-identity>.can.json` advertises a protocol-1 loopback UDP CAN broker. Devices send a 92-byte wire packet, independent of host struct layout:
 

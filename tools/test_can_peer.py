@@ -122,19 +122,20 @@ class ReferencePeerTest(unittest.TestCase):
         responses = json.loads(subprocess.check_output([executable, "--cockpit-vectors"], text=True))
         for name, response in responses.items():
             state = response["state"]
-            self.assertEqual((state["protocol"], state["canProtocol"]), (2, 3))
+            self.assertEqual((state["protocol"], state["canProtocol"]), (3, 3))
             for module in state["modules"]:
                 profile = module["profile"]
                 report = bytes.fromhex(module["report"])
                 self.assertEqual(len(report), (profile["buttons"] + 7) // 8 + (profile["hats"] + 1) // 2 + 2 * profile["axes"], name)
-                if not (state["running"] and module["online"] and module["profileMatch"] and module["hasInput"] and not module["directUsb"]):
+                if not (state["running"] and module["enabled"] and module["online"] and module["profileMatch"] and module["hasInput"] and not module["directUsb"]):
                     self.assertEqual(int.from_bytes(report[:(profile["buttons"] + 7) // 8], "little"), 0, name)
                     offset = (profile["buttons"] + 7) // 8
                     for hat in range(profile["hats"]):
                         self.assertEqual((report[offset + hat // 2] >> (4 * (hat % 2))) & 15, 8, name)
-        self.assertTrue(responses["profile_changed"]["state"]["modules"][0]["pendingProfileMatch"])
-        self.assertTrue(responses["profile_changed"]["state"]["needsApply"])
-        self.assertTrue(responses["profile_updated_pending"]["state"]["modules"][0]["pendingProfileMatch"])
+        self.assertFalse(responses["profile_changed"]["state"]["modules"][0]["profileMatch"])
+        self.assertFalse(responses["profile_changed"]["state"]["layoutPending"])
+        self.assertTrue(responses["profile_updated_pending"]["state"]["layoutPending"])
+        self.assertTrue(responses["profile_updated_pending"]["state"]["modules"][0]["enabled"])
         self.assertFalse(responses["profile_updated_pending"]["state"]["modules"][0]["profileMatch"])
         self.assertEqual(responses["stale_epoch"]["error"], "stale_epoch")
         self.assertFalse(responses["offline"]["state"]["modules"][0]["online"])

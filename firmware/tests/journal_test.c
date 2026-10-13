@@ -1,4 +1,5 @@
 #include "gateway_journal.h"
+#include "opensimgear/gateway_registry.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -82,6 +83,6 @@ int main(void) {
     assert(!osg_journal_commit(&backend,out,sizeof out+1,0x10000));
     assert(!osg_journal_commit(&backend,out,1,0));
     assert(flash.operations==0);
-    power_failure(0); power_failure(1); power_failure(500); power_failure(OSG_JOURNAL_CAPACITY);
+    power_failure(0); power_failure(1); power_failure(500); power_failure(OSG_GW_REGISTRY_RECORD_SIZE); power_failure(OSG_JOURNAL_CAPACITY);
     puts("gateway flash journal power failure tests passed"); return 0;
 }
