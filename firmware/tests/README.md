@@ -1,5 +1,12 @@
 # Firmware validation
 
+Action routing tests exercise the production parser, bounded prefixing,
+current-lease status with direct USB ownership, disabled HID access, fragmented
+responses, nested device validation errors, cancellation and timeout. Existing
+configuration source/boot/epoch/lease/request guards apply to actions too. The
+independent E2E suite checks advertised RGB/boolean LEDs, invalid arguments and
+catalogue revisions, applied state, lost replies and unchanged settings/descriptors.
+
 The portable suites test observable gateway behavior and interrupted flash
 journal writes. See [recorded validation results](../VALIDATION.md). Hardware
 acceptance must cover USB HID/CDC enumeration, CAN communication, ownership,
@@ -68,3 +75,10 @@ Publication tests additionally reject old input and completions, reserve the las
 lease capacity against intervening announcements, handle offline return and late
 boot renewal, preserve monotonically increasing assignments, and diagnose lease
 exhaustion before saving a layout that cannot be activated.
+
+## Action routing coverage
+
+Run `python3 firmware/tests/coverage.py` from the repository root with matching
+Clang, `llvm-cov` and `llvm-profdata` tools. The runner executes all portable tests
+and requires more than 70% line coverage in the CDC parser and module transaction
+dispatcher. CI runs the same gate with LLVM 18.

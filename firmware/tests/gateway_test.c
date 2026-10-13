@@ -359,6 +359,64 @@ static void cockpit_test(void) {
     assert(strstr(output,"\"enabled\":false,\"published\":false"));
     assert(!osg_gateway_cockpit_response(&g,"0123456789abcdef01234567",3,NULL,output,10) && !output[0]);
 }
+static void action_test(void) {
+    osg_gateway_t g; assert(osg_gateway_init(&g,65536,NULL));
+    osg_gateway_message_t assignment=discover(&g,1,0);
+    osg_gateway_cockpit_request_t request;
+    const char *line="cockpit 11 65536 action 00000000000000000000000000000001 100 describe 0";
+    assert(osg_gateway_cockpit_parse(line,&request));
+    assert(request.action==OSG_GW_COCKPIT_ACTION && !strcmp(request.command,"describe 0"));
+    const char *invalid[]={
+        "cockpit 11 65536 action 00000000000000000000000000000001 100 ",
+        "cockpit 11 65536 action 00000000000000000000000000000001 100 state\n",
+        "cockpit 11 65536 action 00000000000000000000000000000001 0 state",
+        "cockpit 11 65536 action 00000000000000000000000000000000 100 state"};
+    for(unsigned i=0;i<sizeof invalid/sizeof invalid[0];i++) {
+        osg_gateway_cockpit_request_t bad;
+        assert(!osg_gateway_cockpit_parse(invalid[i],&bad));
+    }
+    char large[OSG_GW_CONFIG_COMMAND_CAPACITY+100];
+    size_t prefix=(size_t)snprintf(large,sizeof large,"cockpit 11 65536 action 00000000000000000000000000000001 100 ");
+    memset(large+prefix,'a',OSG_GW_CONFIG_COMMAND_CAPACITY-8); large[prefix+OSG_GW_CONFIG_COMMAND_CAPACITY-8]=0;
+    assert(osg_gateway_cockpit_parse(large,&request));
+    large[prefix+OSG_GW_CONFIG_COMMAND_CAPACITY-8]='a'; large[prefix+OSG_GW_CONFIG_COMMAND_CAPACITY-7]=0;
+    assert(!osg_gateway_cockpit_parse(large,&request));
+    assert(osg_gateway_cockpit_parse(line,&request));
+    osg_gateway_config_t transaction={0};
+    assert(!strcmp(osg_gateway_config_start(&transaction,&g,&request,0),"configuration_route_not_ready"));
+    /* Status proves reachability even with no input and direct USB ownership. */
+    osg_gateway_message_t status=assignment; status.type=OSG_GW_HEARTBEAT;
+    status.sequence=1; status.direct_usb=true;
+    assert(receive(&g,&status,1,NULL)==OSG_GW_RX_ACCEPTED);
+    osg_gateway_identity_t id=identity(1); assert(osg_gateway_disable(&g,&id));
+    uint32_t generation=g.pending.generation;
+    assert(!osg_gateway_config_start(&transaction,&g,&request,1));
+    assert(transaction.action && !strcmp(transaction.command,"action describe 0"));
+    assert(transaction.route.config_total==strlen(transaction.command));
+    assert(g.modules[0].direct_usb && !g.modules[0].has_input && g.pending.generation==generation);
+    const char reply[]="OK\n{\"ok\":false,\"error\":\"invalidArgument\"}";
+    osg_gateway_message_t response=transaction.route; response.type=OSG_GW_CONFIG_RESPONSE;
+    response.config_total=(uint16_t)strlen(reply);
+    for(unsigned offset=0;offset<strlen(reply);offset+=OSG_GW_CONFIG_CHUNK_SIZE) {
+        response.config_offset=(uint16_t)offset;
+        unsigned remaining=(unsigned)strlen(reply)-offset;
+        response.config_length=(uint8_t)(remaining>OSG_GW_CONFIG_CHUNK_SIZE ? OSG_GW_CONFIG_CHUNK_SIZE : remaining);
+        memcpy(response.config_data,reply+offset,response.config_length);
+        assert(osg_gateway_config_receive(&transaction,&g,&response));
+    }
+    const char *error,*json;
+    assert(osg_gateway_config_result(&transaction,&error,&json) && !error && !strcmp(json,reply+3));
+    char output[OSG_GW_COCKPIT_RESPONSE_CAPACITY];
+    assert(osg_gateway_cockpit_action_response(&g,"0123456789abcdef01234567",11,error,json,output,sizeof output));
+    assert(strstr(output,"\"targetAction\":{\"ok\":false") && !strstr(output,"targetConfig"));
+    assert(!osg_gateway_cockpit_action_response(&g,"0123456789abcdef01234567",11,error,json,output,10) && !output[0]);
+    assert(!osg_gateway_config_start(&transaction,&g,&request,2));
+    osg_gateway_config_tick(&transaction,&g,NULL,OSG_GATEWAY_CONFIG_TIMEOUT_MS+2);
+    assert(osg_gateway_config_result(&transaction,&error,&json) && !strcmp(error,"configuration_timeout"));
+    assert(!osg_gateway_config_start(&transaction,&g,&request,3));
+    osg_gateway_config_cancel(&transaction);
+    assert(!transaction.busy && !transaction.action);
+}
 static void configuration_test(void) {
     osg_gateway_t g; assert(osg_gateway_init(&g,65536,NULL));
     osg_gateway_message_t initial=discover(&g,1,0);
@@ -620,6 +678,6 @@ static void cockpit_vectors(void) {
 int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--snapshot")) { snapshot(); return 0; }
     if(argc==2 && !strcmp(argv[1],"--cockpit-vectors")) { cockpit_vectors(); return 0; }
-    protocol_test(); lifecycle_test(); bounds_and_wrap_test(); registry_test(); descriptor_test(); maximum_profile_test(); delivery_test(); transport_source_test(); cockpit_test(); configuration_test(); automatic_lifecycle_test(); disabled_snapshot_test(); publication_lease_test();
+    protocol_test(); lifecycle_test(); bounds_and_wrap_test(); registry_test(); descriptor_test(); maximum_profile_test(); delivery_test(); transport_source_test(); cockpit_test(); configuration_test(); action_test(); automatic_lifecycle_test(); disabled_snapshot_test(); publication_lease_test();
     puts("gateway core: all tests passed"); return 0;
 }

@@ -20,6 +20,11 @@ jobs:
           OSG_GATEWAY_TEST: .build/native/osg_gateway_test
           OSG_CYPHAL_PEER_LIBRARY: .build/native/libosg_gateway_peer.so
         run: python3 -m unittest discover -s tools -p 'test_*.py'
+      - name: Action routing coverage above 70 percent
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends clang-18 llvm-18
+          python3 firmware/tests/coverage.py --clang clang-18 --llvm-cov llvm-cov-18 --llvm-profdata llvm-profdata-18
   board-build:
     runs-on: ubuntu-24.04
     steps:

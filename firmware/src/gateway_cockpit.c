@@ -21,15 +21,16 @@ bool osg_gateway_cockpit_parse(const char *line,osg_gateway_cockpit_request_t *o
     if(!number(&p,&out->id) || *p++!=' ') return false;
     if(!strcmp(p,"snapshot")) { out->action=OSG_GW_COCKPIT_SNAPSHOT; return true; }
     if(!number(&p,&out->epoch) || !out->epoch || *p++!=' ') return false;
-    if(!strncmp(p,"config ",7)) {
-        out->action=OSG_GW_COCKPIT_CONFIG; p+=7;
+    if(!strncmp(p,"config ",7) || !strncmp(p,"action ",7)) {
+        out->action=*p=='a' ? OSG_GW_COCKPIT_ACTION : OSG_GW_COCKPIT_CONFIG; p+=7;
         if(strlen(p)<35 || p[32]!=' ') return false;
         char identity[33]; memcpy(identity,p,32); identity[32]=0;
         if(!osg_gateway_identity_parse(identity,&out->identity)) return false;
         p+=33;
         if(!number(&p,&out->boot) || !out->boot || *p++!=' ') return false;
         size_t length=strlen(p);
-        if(!length || length>=sizeof out->command) return false;
+        size_t prefix=out->action==OSG_GW_COCKPIT_ACTION ? 7U : 0U;
+        if(!length || length+prefix>=sizeof out->command) return false;
         for(size_t i=0;i<length;i++) if((unsigned char)p[i]<32 || (unsigned char)p[i]>126) return false;
         memcpy(out->command,p,length+1); return true;
     }
@@ -72,8 +73,8 @@ static void append(writer_t *w,const char *format,...) {
     w->length+=(size_t)n;
 }
 static const char *boolean(bool value) { return value?"true":"false"; }
-size_t osg_gateway_cockpit_config_response(const osg_gateway_t *g,const char uid[25],uint32_t id,
-                                   const char *error,const char *target_config,char *out,size_t capacity) {
+static size_t module_response(const osg_gateway_t *g,const char uid[25],uint32_t id,
+    const char *error,const char *target,const char *target_key,char *out,size_t capacity) {
     if(!out || !capacity) return 0;
     out[0]=0;
     if(!g || !uid || strlen(uid)!=24) return 0;
@@ -122,10 +123,18 @@ size_t osg_gateway_cockpit_config_response(const osg_gateway_t *g,const char uid
         append(&w,"\"}"); first=false;
     }
     append(&w,"]}");
-    if(target_config) append(&w,",\"targetConfig\":%s",target_config);
+    if(target) append(&w,",\"%s\":%s",target_key,target);
     append(&w,"}\r\n");
     if(!w.valid) { out[0]=0; return 0; }
     return w.length;
+}
+size_t osg_gateway_cockpit_config_response(const osg_gateway_t *g,const char uid[25],uint32_t id,
+    const char *error,const char *target_config,char *out,size_t capacity) {
+    return module_response(g,uid,id,error,target_config,"targetConfig",out,capacity);
+}
+size_t osg_gateway_cockpit_action_response(const osg_gateway_t *g,const char uid[25],uint32_t id,
+    const char *error,const char *target_action,char *out,size_t capacity) {
+    return module_response(g,uid,id,error,target_action,"targetAction",out,capacity);
 }
 size_t osg_gateway_cockpit_response(const osg_gateway_t *g,const char uid[25],uint32_t id,
     const char *error,char *out,size_t capacity) {
