@@ -18,7 +18,7 @@ jobs:
       - name: Install Pico build and coverage tools
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends cmake gcc-arm-none-eabi libnewlib-arm-none-eabi clang-18 llvm-18
+          sudo apt-get install --no-install-recommends cmake gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-dev libstdc++-arm-none-eabi-newlib clang-18 llvm-18
       - name: Build pinned RP2040 debug target and audit memory
         run: node simulation/pico/firmware/build.mjs
       - name: Sanitized firmware, interrupted flash and coverage tests

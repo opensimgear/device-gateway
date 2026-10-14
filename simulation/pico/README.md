@@ -6,7 +6,10 @@ The current firmware uses CDC protocol 3 with an explicit Pico debug capability.
 
 ## Build and flash
 
-Install Node.js, Git, CMake and an Arm GNU embedded compiler, then run from this repository:
+Install Node.js, Git, CMake and an Arm GNU embedded toolchain with C and C++
+headers/libraries. On Ubuntu, the compiler/Newlib packages also need
+`libstdc++-arm-none-eabi-dev` and `libstdc++-arm-none-eabi-newlib` because the Pico
+SDK compiles its C++ allocation support even for this C application. Then then run from this repository:
 
 ```sh
 node simulation/pico/firmware/build.mjs
