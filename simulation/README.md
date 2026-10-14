@@ -64,6 +64,20 @@ result uncertain: read `state` instead of replaying an invocation. The device
 simulation supplies RGB/boolean LEDs through the production action dispatcher.
 These outputs are software state; the simulation does not drive physical LEDs.
 
+The CDC endpoint also forwards bounded panel event reads:
+
+```text
+cockpit <request-id> <epoch> events <module-identity32> <boot> state
+cockpit <request-id> <epoch> events <module-identity32> <boot> read <stream> <after>
+```
+
+The device reply appears as `targetEvents`. Take a state baseline first; pages
+contain ordered transitions after a stream-scoped cursor, independent of HID
+ownership. A short debounced press/release can be read after both edges occurred.
+On a gap, mapping activation or reconnect, establish a fresh baseline. The
+Master Caution device example uses the same status LED action as the physical
+board. See the [event contract](https://github.com/opensimgear/protocol/blob/main/serial/panel-input-events.md).
+
 The process accepts diagnostic commands on its own stdin. These commands are unavailable through the CDC endpoint used by Cockpit:
 
 ```text

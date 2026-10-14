@@ -152,6 +152,21 @@ class CDC:
             assert result['error'] == expected and result['ok'] == (expected is None), result
             return result.get('targetAction')
 
+    def input_events(self, identity, boot, command, expected=None):
+        deadline = time.monotonic() + 2
+        while True:
+            self.sequence += 1
+            result = json.loads(self.line(f'cockpit {self.sequence} {self.epoch} events {identity} {boot} {command}'))
+            assert result['id'] == self.sequence
+            if result.get('state'):
+                self.epoch = result['state']['epoch']
+            if (expected is None and result['error'] == 'configuration_route_not_ready'
+                    and time.monotonic() < deadline):
+                time.sleep(.025)
+                continue
+            assert result['error'] == expected and result['ok'] == (expected is None), result
+            return result.get('targetEvents')
+
     def until(self, predicate, timeout=8):
         deadline = time.monotonic() + timeout
         latest = None
@@ -271,6 +286,28 @@ def acceptance(launch):
         gateway.admin('drop_reply 0')
         assert {s['id']: s['values'] for s in cdc.action(panel, panel_boot, 'state')['states']}['led.boolean.set_enabled'] == [False]
         passed('advertised RGB/boolean actions, validation, applied state and lost-reply reconciliation preserve configuration and HID')
+
+        event_baseline = cdc.input_events(panel, panel_boot, 'state')
+        assert event_baseline['ok'] and event_baseline['schemaVersion'] == 1
+        stream, after = event_baseline['stream'], event_baseline['head']
+        device_before = devices[1].admin('inspect')
+        devices[1].admin('contact 0 1'); devices[1].admin('contact 0 0')
+        page = cdc.input_events(panel, panel_boot, f'read {stream} {after}')
+        assert page['events'] == [
+            {'sequence': after + 1, 'control': 0, 'pressed': True},
+            {'sequence': after + 2, 'control': 0, 'pressed': False}], page
+        retained_id = cdc.sequence
+        devices[1].admin('contact 0 1'); devices[1].admin('contact 0 0')
+        duplicate = json.loads(cdc.line(f'cockpit {retained_id} {cdc.epoch} events {panel} {panel_boot} read {stream} {after}'))
+        assert duplicate['targetEvents'] == page, 'Completed transport retry must remain immutable'
+        all_edges = cdc.input_events(panel, panel_boot, f'read {stream} {after}')
+        assert len(all_edges['events']) == 4 and not all_edges['more']
+        assert cdc.input_events(panel, panel_boot, f'read {stream + 1} 0')['error'] == 'staleStream'
+        cdc.input_events(panel, panel_boot + 1, 'state', 'stale_module_boot')
+        device_after = devices[1].admin('inspect')
+        for field in ('settingsErases', 'settingsPrograms', 'moduleReconnects', 'descriptorHex'):
+            assert device_before[field] == device_after[field], field
+        passed('short panel presses survive delayed polling, immutable CAN retries and independent event cursors')
 
         identity = identities[0]
         boot = boots[identity]
@@ -401,6 +438,15 @@ def acceptance(launch):
         assert cdc.action(panel, panel_boot, f'invoke {revision} led.boolean.set_enabled 1')['values'] == [True]
         assert cdc.action(panel, panel_boot, 'state')['ok']
         hidden_descriptor = gateway.admin('inspect')['descriptorHex']
+        devices[1].admin('contact 0 0')
+        disabled_baseline = cdc.input_events(panel, panel_boot, 'state')
+        devices[1].admin('direct 1')
+        devices[1].admin('contact 0 1'); devices[1].admin('contact 0 0')
+        disabled_events = cdc.input_events(panel, panel_boot,
+            f'read {disabled_baseline["stream"]} {disabled_baseline["head"]}')
+        assert [event['pressed'] for event in disabled_events['events']] == [True, False]
+        assert not module(cdc.request('snapshot')['state'], panel)['hasInput']
+        devices[1].admin('direct 0')
         assert report_bytes(hidden_descriptor) == {1: 7, 3: 1}
         old_epoch = state['epoch']
         gateway.stop(abrupt=True); cdc.close(); gateway = gateway_start(name='gateway-disabled-restarted')

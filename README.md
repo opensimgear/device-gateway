@@ -54,6 +54,13 @@ or change HID descriptors. The gateway forwards action catalogues without retain
 them in registry storage. See [milestone 1](https://github.com/opensimgear/cockpit/issues/13)
 and the [action contract](https://github.com/opensimgear/protocol/blob/main/serial/device-actions.md).
 
+The same guarded request/reply transport also carries `events state` and
+`events read <stream> <after>`, returning request-scoped `targetEvents` JSON.
+Devices retain ordered debounced button/encoder transitions in their own bounded
+log; the gateway forwards pages independently of HID enablement or direct USB
+ownership. Consumers baseline before forwarding new presses and recover from
+explicit stream/gap errors. See the [panel event contract](https://github.com/opensimgear/protocol/blob/main/serial/panel-input-events.md).
+
 ## Independent simulation
 
 From this repository, launch the native gateway:

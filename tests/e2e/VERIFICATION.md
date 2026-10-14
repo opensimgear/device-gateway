@@ -35,3 +35,15 @@ adds four concurrently connected gateways in the native UI.
 These are native protocol/report tests. They do not establish physical USB/HID
 enumeration or electrical CAN acceptance. Default remote-ref runs require the
 coordinated repository changes to be published first.
+
+## Bounded panel events — 2026-10-13
+
+The sanitizer acceptance runner passed 14 checks using matching local gateway,
+device and common sources. Added checks routed a debounced press/release through
+ordinary CDC/CAN after both edges, retained an immutable request reply after
+new input, read the fresh ordered log, rejected stale stream/module boot and
+continued event reads with disabled HID and direct USB ownership. Reads/actions
+left flash, descriptor and reconnect counters unchanged. Evidence is under the
+workspace `.research/panel-events/acceptance/`; canonical transport integration
+also passed its 64-record overflow/16-record page and stream-reset fixture.
+These are native software checks; physical USB/CAN validation remains deferred.

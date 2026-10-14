@@ -21,15 +21,15 @@ bool osg_gateway_cockpit_parse(const char *line,osg_gateway_cockpit_request_t *o
     if(!number(&p,&out->id) || *p++!=' ') return false;
     if(!strcmp(p,"snapshot")) { out->action=OSG_GW_COCKPIT_SNAPSHOT; return true; }
     if(!number(&p,&out->epoch) || !out->epoch || *p++!=' ') return false;
-    if(!strncmp(p,"config ",7) || !strncmp(p,"action ",7)) {
-        out->action=*p=='a' ? OSG_GW_COCKPIT_ACTION : OSG_GW_COCKPIT_CONFIG; p+=7;
+    if(!strncmp(p,"config ",7) || !strncmp(p,"action ",7) || !strncmp(p,"events ",7)) {
+        out->action=*p=='a' ? OSG_GW_COCKPIT_ACTION : *p=='e' ? OSG_GW_COCKPIT_EVENTS : OSG_GW_COCKPIT_CONFIG; p+=7;
         if(strlen(p)<35 || p[32]!=' ') return false;
         char identity[33]; memcpy(identity,p,32); identity[32]=0;
         if(!osg_gateway_identity_parse(identity,&out->identity)) return false;
         p+=33;
         if(!number(&p,&out->boot) || !out->boot || *p++!=' ') return false;
         size_t length=strlen(p);
-        size_t prefix=out->action==OSG_GW_COCKPIT_ACTION ? 7U : 0U;
+        size_t prefix=out->action!=OSG_GW_COCKPIT_CONFIG ? 7U : 0U;
         if(!length || length+prefix>=sizeof out->command) return false;
         for(size_t i=0;i<length;i++) if((unsigned char)p[i]<32 || (unsigned char)p[i]>126) return false;
         memcpy(out->command,p,length+1); return true;
@@ -135,6 +135,10 @@ size_t osg_gateway_cockpit_config_response(const osg_gateway_t *g,const char uid
 size_t osg_gateway_cockpit_action_response(const osg_gateway_t *g,const char uid[25],uint32_t id,
     const char *error,const char *target_action,char *out,size_t capacity) {
     return module_response(g,uid,id,error,target_action,"targetAction",out,capacity);
+}
+size_t osg_gateway_cockpit_events_response(const osg_gateway_t *g,const char uid[25],uint32_t id,
+    const char *error,const char *target_events,char *out,size_t capacity) {
+    return module_response(g,uid,id,error,target_events,"targetEvents",out,capacity);
 }
 size_t osg_gateway_cockpit_response(const osg_gateway_t *g,const char uid[25],uint32_t id,
     const char *error,char *out,size_t capacity) {

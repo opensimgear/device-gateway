@@ -7,6 +7,14 @@ configuration source/boot/epoch/lease/request guards apply to actions too. The
 independent E2E suite checks advertised RGB/boolean LEDs, invalid arguments and
 catalogue revisions, applied state, lost replies and unchanged settings/descriptors.
 
+Panel-event routing tests cover the separate CDC verb, bounded `events `
+prefix, fragmented JSON and nested gap errors in `targetEvents`. The independent
+process test retains a press/release between reads, retries an immutable request
+after later edges, reads fresh pages, rejects stale stream/boot and checks direct
+USB/disabled HID access without settings, descriptor or reconnect changes.
+Canonical cross-firmware integration additionally exercises the production event
+collector and device handler over sealed Cyphal request/response envelopes.
+
 The portable suites test observable gateway behavior and interrupted flash
 journal writes. See [recorded validation results](../VALIDATION.md). Hardware
 acceptance must cover USB HID/CDC enumeration, CAN communication, ownership,
@@ -76,7 +84,7 @@ lease capacity against intervening announcements, handle offline return and late
 boot renewal, preserve monotonically increasing assignments, and diagnose lease
 exhaustion before saving a layout that cannot be activated.
 
-## Action routing coverage
+## Action and event routing coverage
 
 Run `python3 firmware/tests/coverage.py` from the repository root with matching
 Clang, `llvm-cov` and `llvm-profdata` tools. The runner executes all portable tests

@@ -8,7 +8,7 @@ typedef struct {
     char response[OSG_GW_CONFIG_RESPONSE_CAPACITY];
     uint16_t sent,received,total;
     uint32_t started;
-    bool busy,complete,action;
+    bool busy,complete,action,events;
 } osg_gateway_config_t;
 const char *osg_gateway_config_start(osg_gateway_config_t *,const osg_gateway_t *,
     const osg_gateway_cockpit_request_t *,uint32_t now);

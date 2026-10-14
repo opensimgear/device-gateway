@@ -61,7 +61,7 @@ The gateway scenario exercises three independently launched JSON devices through
 real CDC and CAN transports, including device-before-gateway startup, profile changes,
 saved configuration, automatic append and offline ghosts, generated HID layouts,
 live and neutral reports, persistent Disable/Enable, offline Forget/rediscovery,
-CDC-only empty state, save failure and restart recovery. With `--with-cockpit`, the cloned Cockpit scenario also verifies its normal
+CDC-only empty state, save failure and restart recovery. Event checks capture a short press/release between polls, compare immutable retries with fresh pages, reject stale streams/boots and verify direct USB/disabled access without configuration or reconnect side effects. With `--with-cockpit`, the cloned Cockpit scenario also verifies its normal
 discovery and configuration adapters against the gateway’s own build.
 
 Native simulations execute the production configuration, flash journal, Cyphal
