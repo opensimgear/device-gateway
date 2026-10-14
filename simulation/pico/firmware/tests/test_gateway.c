@@ -35,7 +35,8 @@ static void usb_names(void){
   /* Removal keeps the old name until its published USB interface is detached. */
   assert(command("{\"id\":\"remove\",\"command\":\"remove\",\"moduleId\":\"OSG-SQ-0042\"}"));assert(osg_usb_string_descriptor(&g,5,descriptor,OSG_USB_STRING_CAPACITY)==sizeof name/sizeof name[0]);assert(!memcmp(descriptor,name,sizeof name));osg_gateway_commit_layout(&g);check_usb_ascii(5,names[1]);assert(!osg_usb_string_descriptor(&g,8,descriptor,OSG_USB_STRING_CAPACITY));
   /* USB limits count UTF-16 units, and never split an emoji's surrogate pair. */
-  for(unsigned i=0;i<80;i++)memcpy(g.layout[0].label+4*i,"🏎",4);g.layout[0].label[320]=0;
+  for(unsigned i=0;i<80;i++) { memcpy(g.layout[0].label+4*i,"🏎",4); }
+  g.layout[0].label[320]=0;
   assert(osg_usb_string_descriptor(&g,5,descriptor,OSG_USB_STRING_CAPACITY)==127&&descriptor[0]==0x03fe&&descriptor[125]==0xd83c&&descriptor[126]==0xdfce);
   memset(g.layout[0].label,'x',125);memcpy(g.layout[0].label+125,"🏎",5);
   assert(osg_usb_string_descriptor(&g,5,descriptor,OSG_USB_STRING_CAPACITY)==126&&descriptor[0]==0x03fc&&descriptor[125]=='x');

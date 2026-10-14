@@ -18,7 +18,9 @@ The initiating repository owns the runner. It clones remote repositories listed 
 `dependencies.json` into its ignored `.e2e/deps/`, initializes submodules recursively,
 checks that both firmware repositories declare the same firmware-common commit,
 and builds each runtime through that repository’s `simulation/build.py`.
-The exact common pin is cloned automatically. No parent setup or adjacent checkout
+The exact common pin is cloned automatically. Firmware refs are immutable commits
+from the same contract milestone; update the device ref and both common pins
+together so bootstrap cannot combine M3 firmware with M4 ownership callbacks. No parent setup or adjacent checkout
 is consulted. Checkouts, builds, state and reports all stay under `.e2e/`.
 
 `--prepare-only` provisions components without starting processes. The resulting

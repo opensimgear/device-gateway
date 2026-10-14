@@ -13,10 +13,11 @@ bool osg_gateway_registry_valid(const osg_gateway_registry_t *r) {
     for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) if(r->slots[i].occupied) enabled+=r->slots[i].enabled;
     for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) if(r->slots[i].occupied) {
         const osg_gateway_slot_t *s=&r->slots[i];
+        bool inputs=s->profile.button_count || s->profile.axis_count || s->profile.hat_count;
         if(!osg_gateway_identity_valid(&s->identity) || !osg_gateway_profile_valid(&s->profile) ||
-           !s->report_id || (s->enabled ? s->order>=enabled : s->order!=255)) return false;
+           (inputs ? !s->report_id : (s->report_id || s->enabled)) || (s->enabled ? s->order>=enabled : s->order!=255)) return false;
         for(unsigned j=0;j<i;j++) if(r->slots[j].occupied &&
-            (osg_gateway_identity_equal(&s->identity,&r->slots[j].identity) || s->report_id==r->slots[j].report_id ||
+            (osg_gateway_identity_equal(&s->identity,&r->slots[j].identity) || (s->report_id && s->report_id==r->slots[j].report_id) ||
              (s->enabled && r->slots[j].enabled && s->order==r->slots[j].order))) return false;
     }
     return true;

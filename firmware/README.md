@@ -60,7 +60,11 @@ Module UUIDs are separate 16-byte values printed as 32 hex digits.
 
 The gateway remembers up to 32 identities, with independent enabled state,
 explicit HID report ID and position in the enabled controller order. Unknown
-valid CAN identities enable and append automatically without Cockpit. Enabled
+valid CAN input identities enable and append automatically without Cockpit.
+Output-only profiles with zero counts and a valid revision enroll disabled with no
+report ID or descriptor index; Status proves their ordinary action/configuration
+route. Enable rejects them with `input_not_supported`. Inventory activation with
+an unchanged controller descriptor does not reconnect USB. Enabled
 offline devices remain enumerated with their stored neutral reports. Disable
 removes a collection but persists the identity/disabled choice; Enable appends it
 at the end; Forget is accepted only while offline and removes the remembered
@@ -215,3 +219,9 @@ the SRAM distinction in the
 See [board wiring and bring-up](boards/gateway_g0b1cb_v0_1_0/README.md),
 [portable behavior](docs/core.md), [CAN peer utility](../tools/README.md), and
 [validation results](VALIDATION.md).
+
+Endpoint leases are enforced by the downstream device action handler, using the
+existing routed `targetAction` envelope. The gateway forwards claim/renew/
+invoke_owned/release/ownership without storing secret tokens or output state.
+Existing identity/boot/lease/epoch/source guards and immutable response caching
+remain authoritative. See [output ownership](https://github.com/opensimgear/protocol/blob/main/serial/output-ownership.md).

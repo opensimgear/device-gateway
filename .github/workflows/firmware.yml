@@ -3,6 +3,34 @@ on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
 jobs:
+  pico-debug:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      OSG_COVERAGE_CLANG: clang-18
+      OSG_LLVM_COV: llvm-cov-18
+      OSG_LLVM_PROFDATA: llvm-profdata-18
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Pico build and coverage tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends cmake gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-dev libstdc++-arm-none-eabi-newlib clang-18 llvm-18
+      - name: Build pinned RP2040 debug target and audit memory
+        run: node simulation/pico/firmware/build.mjs
+      - name: Sanitized firmware, interrupted flash and coverage tests
+        run: node simulation/pico/firmware/test.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pico-debug-firmware
+          path: |
+            .research/pico/build/osg-pico-gateway.uf2
+            .research/pico/build/osg-pico-gateway.uf2.sha256
+            .research/pico/build/firmware-manifest.json
+            .research/pico/build/memory-audit.json
   portable-tests:
     runs-on: ubuntu-24.04
     steps:

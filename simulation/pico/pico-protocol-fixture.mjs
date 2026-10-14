@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-const executable = fileURLToPath(new URL('./firmware/build/host/osg-gateway-stdio', import.meta.url));
+const executable = fileURLToPath(new URL('../../.research/pico/host/osg-gateway-stdio', import.meta.url));
 const path = '/dev/cu.usbmodemOSGTEST';
 const serialNumber = 'OSG-PICO-MOCK-0123456789ABCDEF';
 

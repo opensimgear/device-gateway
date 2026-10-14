@@ -52,6 +52,46 @@ static void protocol_test(void) {
     invalid=profile(); invalid.button_count=129; assert(!osg_gateway_profile_valid(&invalid));
     invalid=profile(); invalid.hat_count=5; assert(!osg_gateway_profile_valid(&invalid));
 }
+
+static void output_only_test(void) {
+    osg_gateway_t g;assert(osg_gateway_init(&g,65536,NULL));
+    osg_gateway_message_t a=announce(1),assignment;
+    a.profile=(osg_gateway_profile_t){.revision=1};
+    assert(osg_gateway_profile_valid(&a.profile));assert(!osg_gateway_profile_report_size(&a.profile));
+    assert(receive(&g,&a,0,&assignment)==OSG_GW_RX_ASSIGNMENT);
+    osg_gateway_slot_t *slot=&g.pending.slots[0];
+    assert(slot->occupied && !slot->enabled && !slot->report_id && slot->order==255);
+    assert(osg_gateway_layout_equal(&g.active,&g.pending));osg_gateway_apply_layout(&g);assert(!osg_gateway_enable(&g,&a.identity));
+    uint8_t descriptor[512],record[OSG_GW_REGISTRY_RECORD_SIZE];osg_gateway_registry_t restored;
+    assert(!osg_gateway_descriptor(&g,descriptor,sizeof descriptor));
+    assert(osg_gateway_registry_encode(&g.pending,record,sizeof record)==sizeof record);
+    assert(osg_gateway_registry_decode(record,sizeof record,&restored) && !restored.slots[0].report_id);
+    restored.slots[0].enabled=true;assert(!osg_gateway_registry_valid(&restored));
+    restored.slots[0].enabled=false;restored.slots[0].report_id=1;assert(!osg_gateway_registry_valid(&restored));
+    assignment.source_node=a.source_node;assignment.type=OSG_GW_HEARTBEAT;assignment.sequence=1;
+    assert(receive(&g,&assignment,1,NULL)==OSG_GW_RX_ACCEPTED);
+    assignment.type=OSG_GW_INPUT;assignment.sequence=2;assert(receive(&g,&assignment,2,NULL)==OSG_GW_RX_REJECTED);
+    osg_gateway_cockpit_request_t r={.id=1,.epoch=g.epoch,.action=OSG_GW_COCKPIT_ENABLE,.identity=a.identity};
+    bool apply=false;assert(!strcmp(osg_gateway_cockpit_execute(&g,&r,NULL,NULL,&apply),"input_not_supported") && !apply);
+    char json[OSG_GW_COCKPIT_RESPONSE_CAPACITY];
+    assert(osg_gateway_cockpit_response(&g,"0123456789abcdef01234567",1,NULL,json,sizeof json));
+    assert(strstr(json,"\"outputOnly\":true") && strstr(json,"\"reportId\":null"));
+    /* Output inventory consumes no report ID or controller order. */
+    discover(&g,2,3);assert(g.pending.slots[1].report_id==1 && g.pending.slots[1].order==0);
+    osg_gateway_apply_layout(&g);assert(osg_gateway_descriptor(&g,descriptor,sizeof descriptor));
+    assert(!osg_gateway_needs_apply(&g));
+    /* A module that later adds inputs stays disabled until enabled explicitly. */
+    a.profile=profile();a.configuration_generation++;
+    assert(receive(&g,&a,4,&assignment)==OSG_GW_RX_ASSIGNMENT);
+    assert(!slot->enabled && slot->report_id==2 && osg_gateway_layout_equal(&g.active,&g.pending));
+    assert(osg_gateway_enable(&g,&a.identity) && slot->order==1);osg_gateway_apply_layout(&g);
+    /* Removing all inputs disables this collection through the normal layout path. */
+    a.profile=(osg_gateway_profile_t){.revision=2};a.configuration_generation++;
+    assert(receive(&g,&a,5,&assignment)==OSG_GW_RX_ASSIGNMENT);
+    assert(!slot->enabled && !slot->report_id && osg_gateway_needs_apply(&g));
+    osg_gateway_apply_layout(&g);assert(g.active.slots[1].enabled && g.active.slots[1].report_id==1);
+    assert(!osg_gateway_needs_apply(&g));
+}
 static void lifecycle_test(void) {
     osg_gateway_t g; assert(osg_gateway_init(&g,0x10000,NULL));
     osg_gateway_message_t a=discover(&g,1,0),in=input(a,1);
@@ -708,6 +748,6 @@ static void cockpit_vectors(void) {
 int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--snapshot")) { snapshot(); return 0; }
     if(argc==2 && !strcmp(argv[1],"--cockpit-vectors")) { cockpit_vectors(); return 0; }
-    protocol_test(); lifecycle_test(); bounds_and_wrap_test(); registry_test(); descriptor_test(); maximum_profile_test(); delivery_test(); transport_source_test(); cockpit_test(); configuration_test(); action_test(); automatic_lifecycle_test(); disabled_snapshot_test(); publication_lease_test();
+    protocol_test(); output_only_test(); lifecycle_test(); bounds_and_wrap_test(); registry_test(); descriptor_test(); maximum_profile_test(); delivery_test(); transport_source_test(); cockpit_test(); configuration_test(); action_test(); automatic_lifecycle_test(); disabled_snapshot_test(); publication_lease_test();
     puts("gateway core: all tests passed"); return 0;
 }
