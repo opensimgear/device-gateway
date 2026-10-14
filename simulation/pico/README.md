@@ -9,7 +9,7 @@ The current firmware uses CDC protocol 3 with an explicit Pico debug capability.
 Install Node.js, Git, CMake and an Arm GNU embedded toolchain with C and C++
 headers/libraries. On Ubuntu, the compiler/Newlib packages also need
 `libstdc++-arm-none-eabi-dev` and `libstdc++-arm-none-eabi-newlib` because the Pico
-SDK compiles its C++ allocation support even for this C application. Then then run from this repository:
+SDK compiles its C++ allocation support even for this C application. Then run from this repository:
 
 ```sh
 node simulation/pico/firmware/build.mjs
@@ -25,7 +25,7 @@ Gateway registration/controller order, virtual preset inventory and saved device
 
 ## Cockpit controls
 
-Cockpit discovers the board automatically. Its gateway card provides **Pico virtual devices**, including Add, online/offline and reboot controls. Initial devices are shifter, pedals, handbrake and button panel. Additional presets are master caution, radio panel, all input types and output-only rev lights. The latter fits 128 logical buttons, eight axes, four hats, two encoders, a selector and expansion contacts.
+Cockpit discovers the board automatically. Its gateway card provides **Pico virtual devices**, including Add, online/offline and reboot controls. Initial devices are shifter, pedals, handbrake and button panel. Additional presets are master caution, radio panel, all input types and output-only rev lights. The all-inputs preset fits 128 logical buttons, eight axes, four hats, two encoders, a selector and expansion contacts. The output-only preset has zero inputs.
 
 Open a device's Inputs or Setup view to use **Pico debug controls**:
 
