@@ -1,4 +1,18 @@
-# Panel-event routing validation — 2026-10-13
+# Radio contract validation — 2026-10-14
+
+All three sanitizer native suites pass with generic string/axis envelope checks.
+Independent gateway/device process acceptance passes 15 checks, adding actual
+firmware port buffers, ASCII/UTF-8 geometry/bounds, callback failures, maintained
+switches/encoders and independent calibrated/stale axes under disabled/direct HID.
+Reads and output writes leave flash, descriptors and reconnect counters unchanged.
+The starter exposes no unfitted LCD. Canonical snapshot/CDC conformance remains
+unchanged; display/axis metadata is additive within the existing sealed envelopes.
+
+Arm GNU 15.3.1 cross-builds with 54,976 bytes application flash and 107,968 bytes
+RAM including reserved stack/heap. Evidence lives under workspace
+`.research/panel-outputs/`. No hardware was flashed or bench tested.
+
+## Panel-event routing validation — 2026-10-13
 
 The separate event CDC/CAN dispatcher passes all three native suites with
 AddressSanitizer/UndefinedBehaviorSanitizer. Its production parser/forwarder

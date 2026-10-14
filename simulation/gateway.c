@@ -37,7 +37,7 @@ static struct {
     flash_t registry_flash;
     osg_gateway_identity_t gateway_identity;
     uint32_t now,can_frames,ignored_config,node_collisions;
-    bool disconnected,drop_reply;
+    bool disconnected,drop_reply,drop_action_reply;
     char response[OSG_GW_COCKPIT_RESPONSE_CAPACITY];
 } simulation;
 static const char *state_directory;
@@ -127,7 +127,8 @@ static void receive_gateway(const osg_gateway_frame_t *frame) {
     }
     if(!received) return;
     if(m.type==OSG_GW_CONFIG_RESPONSE) {
-        if(simulation.drop_reply) simulation.ignored_config++;
+        if(simulation.drop_reply || (simulation.drop_action_reply && simulation.config.action &&
+            !strncmp(simulation.config.command,"action invoke ",14))) simulation.ignored_config++;
         else (void)osg_gateway_config_receive(&simulation.config,&simulation.gateway,&m);
     } else {
         if(osg_gateway_receive(&simulation.gateway,&m,simulation.now,&reply)==OSG_GW_RX_ASSIGNMENT)
@@ -195,6 +196,7 @@ static void admin(const char *line) {
         osg_gateway_set_running(&simulation.gateway,!simulation.disconnected && !simulation.layout.detached);
         advance(30);
     } else if(sscanf(command,"drop_reply %u",&a)==1 && a<=1) simulation.drop_reply=a!=0;
+    else if(sscanf(command,"drop_action_reply %u",&a)==1 && a<=1) simulation.drop_action_reply=a!=0;
     else { ok=false; error="invalid_request"; }
     inspect(id,ok,error);
 }

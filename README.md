@@ -61,6 +61,13 @@ log; the gateway forwards pages independently of HID enablement or direct USB
 ownership. Consumers baseline before forwarding new presses and recover from
 explicit stream/gap errors. See the [panel event contract](https://github.com/opensimgear/protocol/blob/main/serial/panel-input-events.md).
 
+Radio panels reuse these same routes: display actions declare fitted geometry and
+encoding, and event snapshots add maintained/selector metadata plus independent
+calibrated axes and availability. The gateway forwards these bounded JSON fields
+without storing output state or inferring it from HID. The starter has no fitted
+display; native radio frequency/preset/text ports execute the same product callbacks
+that a physical display driver supplies. See the [radio simulation](https://github.com/opensimgear/device-template/blob/main/simulation/configs/radio-panel.json).
+
 ## Independent simulation
 
 From this repository, launch the native gateway:
