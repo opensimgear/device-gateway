@@ -57,7 +57,7 @@ desktop Cockpit cannot take the test gateway's single CDC connection after USB
 layout detach/reconnect. The default simulator discovery path remains available
 for ordinary development. Namespace/path bounds have separate native-runner tests.
 
-The gateway scenario exercises three independently launched JSON devices through
+The gateway scenario exercises three independent JSON devices, then a radio-panel process, through
 real CDC and CAN transports, including device-before-gateway startup, profile changes,
 saved configuration, automatic append and offline ghosts, generated HID layouts,
 live and neutral reports, persistent Disable/Enable, offline Forget/rediscovery,

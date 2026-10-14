@@ -21,6 +21,14 @@ acceptance must cover USB HID/CDC enumeration, CAN communication, ownership,
 power, disconnect recovery, endpoint and inline placement, and independent
 gateways. Build success alone is not hardware validation.
 
+Radio regression checks retain UTF-8 string readback through `targetAction` and
+independent axis observations through `targetEvents`. The process acceptance
+adds a fourth radio device, disables its HID controller, invokes 7-cell ASCII
+frequency/2-cell preset and 16-cell UTF-8 displays, rejects unsupported sizes and
+encoding before driver writes, and tests callback failure. Maintained/encoder
+records and calibrated/stale axes remain reachable under direct USB ownership.
+Module and gateway flash, descriptors and reconnect counters stay unchanged.
+
 ## Portable core validation
 
 The combined `gateway_test.c` runs without the MCU SDK or TinyUSB. The firmware

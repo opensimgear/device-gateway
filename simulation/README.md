@@ -76,7 +76,9 @@ contain ordered transitions after a stream-scoped cursor, independent of HID
 ownership. A short debounced press/release can be read after both edges occurred.
 On a gap, mapping activation or reconnect, establish a fresh baseline. The
 Master Caution device example uses the same status LED action as the physical
-board. See the [event contract](https://github.com/opensimgear/protocol/blob/main/serial/panel-input-events.md).
+board. The radio example adds firmware-backed string display ports and independent
+axis values/availability to these unchanged routes; display capabilities come from
+the product port rather than the gateway. See the [event contract](https://github.com/opensimgear/protocol/blob/main/serial/panel-input-events.md).
 
 The process accepts diagnostic commands on its own stdin. These commands are unavailable through the CDC endpoint used by Cockpit:
 
@@ -91,6 +93,13 @@ sim 5 reboot
 Each reply is one JSON line with the request `id`, `ok`, `error`, and a `simulation` object. `inspect` includes the current gateway epoch, descriptor bytes, report bytes, registry generations, CAN frame count, and flash operation counts.
 
 `drop_reply 1` suppresses configuration responses for timeout tests. `fault N` interrupts the registry's next erase/program operation after N successful operations. `reboot` reloads the persisted registry and advances the epoch. `disconnect 1` pauses the gateway's firmware running state, and `disconnect 0` resumes it. `advance N` waits N milliseconds while the native clock and CAN handling continue.
+
+`drop_action_reply 1` suppresses only the real CAN response to `action invoke`
+commands, so a peripheral can apply a setter whose acknowledgement is lost.
+`drop_action_reply 0` restores acknowledgements. Action readback and input-event
+commands remain intact; the active invocation still reaches its ordinary
+bounded transport timeout before the CDC client can issue its next request.
+This simulation fault does not change the production router.
 
 ## Tests
 

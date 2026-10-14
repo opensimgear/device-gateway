@@ -434,6 +434,18 @@ static void action_test(void) {
     assert(strstr(output,"\"targetEvents\":{\"ok\":false") && !strstr(output,"targetAction") && !strstr(output,"targetConfig"));
     assert(!osg_gateway_cockpit_events_response(&g,"0123456789abcdef01234567",12,error,json,output,10) && !output[0]);
     assert(!osg_gateway_cockpit_parse("cockpit 12 65536 events 00000000000000000000000000000001 100 state\n",&request));
+    /* Typed string commands remain hex ASCII on the wire; response metadata
+     * and readable UTF-8 text survive the generic bounded JSON envelope. */
+    assert(osg_gateway_cockpit_parse("cockpit 13 65536 action 00000000000000000000000000000001 100 invoke 1 display.text.set_text c3a9e6b3a2",&request));
+    assert(!osg_gateway_config_start(&transaction,&g,&request,5));
+    assert(!strcmp(transaction.command,"action invoke 1 display.text.set_text c3a9e6b3a2"));
+    const char display_json[]="{\"ok\":true,\"schemaVersion\":1,\"catalogueRevision\":1,\"id\":\"display.text.set_text\",\"values\":[\"\xc3\xa9\xe6\xb3\xa2\"]}";
+    assert(osg_gateway_cockpit_action_response(&g,"0123456789abcdef01234567",13,NULL,display_json,output,sizeof output));
+    assert(strstr(output,display_json) && strstr(output,"targetAction") && !strstr(output,"targetEvents"));
+    const char axes_json[]="{\"ok\":true,\"schemaVersion\":1,\"stream\":1,\"head\":0,\"oldest\":1,\"overflow\":0,\"buttonCount\":0,\"held\":[],\"encoderButtons\":[],\"axisCount\":1,\"axes\":[65535],\"axisAvailable\":[true]}";
+    assert(osg_gateway_cockpit_events_response(&g,"0123456789abcdef01234567",14,NULL,axes_json,output,sizeof output));
+    assert(strstr(output,axes_json) && strstr(output,"targetEvents") && !strstr(output,"targetAction"));
+    osg_gateway_config_cancel(&transaction);
 }
 static void configuration_test(void) {
     osg_gateway_t g; assert(osg_gateway_init(&g,65536,NULL));

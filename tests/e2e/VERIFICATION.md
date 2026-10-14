@@ -47,3 +47,16 @@ left flash, descriptor and reconnect counters unchanged. Evidence is under the
 workspace `.research/panel-events/acceptance/`; canonical transport integration
 also passed its 64-record overflow/16-record page and stream-reset fixture.
 These are native software checks; physical USB/CAN validation remains deferred.
+
+## Radio display ports and independent axes — 2026-10-14
+
+The sanitizer acceptance runner passed 15 checks against matching gateway, device
+and common sources. The fourth JSON device uses the production output-port
+callbacks for 7-cell frequency, 2-cell preset and 16-cell UTF-8 text. Routed
+readback reflects the actual native buffers, including exactly 63 UTF-8 bytes
+within 16 scalar cells. Width/ASCII errors leave driver writes unchanged; callback
+failure is reported. Maintained/encoder records and calibrated axes remain
+readable with HID disabled/direct USB active; stale ADC values become neutral and
+unavailable. Module and gateway flash/descriptors/reconnect counters stay unchanged.
+Evidence lives under workspace `.research/panel-outputs/acceptance/`. The actual
+starter has no fitted display; no physical LCD/USB/CAN qualification is claimed.

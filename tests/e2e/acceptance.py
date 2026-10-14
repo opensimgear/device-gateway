@@ -479,6 +479,66 @@ def acceptance(launch):
         assert cdc.action(panel, module(state, panel)['boot'], 'state')['ok']
         passed('zero enabled controllers has no HID descriptor and keeps configuration over CDC')
 
+        # Radio outputs are native firmware ports, not a frontend fixture. All
+        # metadata and calibrated observations traverse the ordinary envelopes.
+        radio_definition = json.loads((Path(launch['deviceRepository']) / 'simulation/configs/radio-panel.json').read_text())
+        radio_id = uuid.uuid4().hex; radio_definition['identity'] = radio_id
+        radio_path = directory / 'radio-panel.json'
+        radio_path.write_text(json.dumps(radio_definition, indent=2) + '\n')
+        radio = start([launch['python'], Path(launch['deviceRepository']) / 'simulation/run.py',
+                       '--config', radio_path, '--gateway', uid, '--state-dir', directory / 'radio-state',
+                       '--output-dir', launch['deviceBuild'], '--no-build'], 'radio-panel')
+        devices.append(radio); identities.append(radio_id)
+        state = cdc.until(lambda s: any(m['identity'] == radio_id and m['published'] for m in s['modules']) and not s['layoutPending'])
+        cdc.request('disable ' + radio_id)
+        state = cdc.until(lambda s: not s['layoutPending'] and not module(s, radio_id)['published'])
+        radio_boot = module(state, radio_id)['boot']
+        before_radio = radio.admin('inspect'); before_gateway = gateway.admin('inspect')
+        catalogue = cdc.action(radio_id, radio_boot, 'describe 0')
+        assert [a['display'] for a in catalogue['actions'] if 'display' in a] == [
+            {'columns': 7, 'rows': 1, 'encoding': 'ascii'}, {'columns': 2, 'rows': 1, 'encoding': 'ascii'},
+            {'columns': 16, 'rows': 1, 'encoding': 'utf8'}]
+        revision = catalogue['catalogueRevision']
+        def display(index, text):
+            action = ('display.uhf.frequency.set_text', 'display.uhf.preset.set_text', 'display.text.set_text')[index]
+            return cdc.action(radio_id, radio_boot, f'invoke {revision} {action} {text.encode().hex() or "-"}')
+        assert display(0, '251.000')['values'] == ['251.000']
+        assert display(1, '20')['values'] == ['20']
+        wide = '😀' * 15 + '波'
+        assert display(2, wide)['values'] == [wide]  # 63 bytes / 16 scalar cells
+        assert display(0, '251.0000')['error'] == 'invalidArgument'
+        assert display(0, 'é')['error'] == 'invalidArgument'
+        actual = radio.admin('inspect')['displays']
+        assert [d['text'] for d in actual] == ['251.000', '20', wide]
+        assert [d['writes'] for d in actual] == [1, 1, 1]
+        radio.admin('display_fail 0 1')
+        assert display(0, '123.450')['error'] == 'failed'
+        assert radio.admin('inspect')['displays'][0]['text'] == '251.000'
+        radio.admin('display_fail 0 0')
+        baseline = cdc.input_events(radio_id, radio_boot, 'state')
+        assert baseline['contactButtonCount'] == 3 and baseline['maintainedButtons'] == [0, 1]
+        assert baseline['encoderButtons'] == [3, 4, 5, 6] and baseline['selectorButtons'] == []
+        radio.admin('contact 0 1'); radio.admin('contact 2 1'); radio.admin('contact 2 0')
+        for pin, pressed in ((3, 1), (4, 1), (3, 0), (4, 0)):
+            radio.admin(f'contact {pin} {pressed}')
+        page = cdc.input_events(radio_id, radio_boot, f'read {baseline["stream"]} {baseline["head"]}')
+        assert [(e['control'], e['pressed']) for e in page['events']] == [(0, True), (2, True), (2, False), (3, True), (3, False)]
+        radio.admin('axis 0 3900')
+        axes = cdc.input_events(radio_id, radio_boot, 'state')
+        assert (axes['axisCount'], axes['axisUsage'], axes['axes'], axes['axisAvailable']) == (1, [48], [65535], [True])
+        radio.admin('direct 1')
+        assert cdc.input_events(radio_id, radio_boot, 'state')['axes'] == [65535]
+        radio.admin('axes_available 0')
+        stale = cdc.input_events(radio_id, radio_boot, 'state')
+        assert stale['axisAvailable'] == [False] and stale['axes'] == stale['axisNeutral'] == [0]
+        radio.admin('axes_available 1'); radio.admin('direct 0')
+        after_radio = radio.admin('inspect'); after_gateway = gateway.admin('inspect')
+        for field in ('settingsErases', 'settingsPrograms', 'moduleReconnects', 'descriptorHex'):
+            assert before_radio[field] == after_radio[field], field
+        for field in ('registryErases', 'registryPrograms', 'gatewayReconnects', 'descriptorHex'):
+            assert before_gateway[field] == after_gateway[field], field
+        passed('radio firmware display ports, bounded ASCII/UTF-8, independent switch/encoder events and calibrated axis freshness with HID disabled/direct USB')
+
         cdc.close()
         time.sleep(.1)
         assert all(node.process.poll() is None for node in [gateway, *devices])
