@@ -1,5 +1,7 @@
 #include "opensimgear/gateway.h"
 #include <string.h>
+static uint8_t free_report_id(const osg_gateway_t *);
+static bool has_inputs(const osg_gateway_profile_t *p) {return p->button_count || p->axis_count || p->hat_count;}
 
 int osg_gateway_find_module(const osg_gateway_t *g,const osg_gateway_identity_t *id) {
     if(!g || !id) return -1;
@@ -142,13 +144,27 @@ osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *g,const osg_gate
         /* First-seen identities enroll automatically. Explicitly disabled identities
          * remain disabled; live enabled profiles stay frozen until update-profile. */
         int registered=osg_gateway_find_slot(&g->pending,&m->identity);
-        if(registered<0) {
+        if(!has_inputs(&m->profile)) {
+            if(registered<0) {
+                for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) if(!g->pending.slots[i].occupied) {registered=(int)i;break;}
+                if(registered<0) {g->admission_error="capacity_exceeded";g->rejected_identity=m->identity;g->rejected_announcements++;goto rejected;}
+                g->pending.slots[registered]=(osg_gateway_slot_t){.occupied=true,.identity=m->identity,.profile=m->profile,.order=255};
+                g->pending.generation++;
+            } else {
+                (void)osg_gateway_disable(g,&m->identity);
+                osg_gateway_slot_t *slot=&g->pending.slots[registered];
+                if(!osg_gateway_profile_equal(&slot->profile,&m->profile) || slot->report_id) {
+                    slot->profile=m->profile;slot->report_id=0;g->pending.generation++;
+                }
+            }
+        } else if(registered<0) {
             if(!osg_gateway_enable(g,&m->identity)) {
                 g->rejected_frames++; g->rejected_announcements++; g->rejected_identity=msg.identity;
                 g->admission_error="capacity_exceeded"; return OSG_GW_RX_FULL;
             }
         } else if(!g->pending.slots[registered].enabled &&
                   !osg_gateway_profile_equal(&g->pending.slots[registered].profile,&m->profile)) {
+            if(!g->pending.slots[registered].report_id) g->pending.slots[registered].report_id=free_report_id(g);
             g->pending.slots[registered].profile=m->profile; g->pending.generation++;
         }
         if(g->admission_error && osg_gateway_identity_equal(&g->rejected_identity,&m->identity)) {
@@ -203,6 +219,8 @@ static uint8_t free_report_id(const osg_gateway_t *g) {
 bool osg_gateway_enable(osg_gateway_t *g,const osg_gateway_identity_t *id) {
     if(!g || !id) return false;
     int index=osg_gateway_find_slot(&g->pending,id),module=osg_gateway_find_module(g,id);
+    const osg_gateway_profile_t *profile=module>=0?&g->modules[module].profile:index>=0?&g->pending.slots[index].profile:NULL;
+    if(!profile || !has_inputs(profile)) return false;
     if(index>=0 && g->pending.slots[index].enabled) return true;
     if(index<0) {
         if(module<0 || !g->modules[module].online) return false;
@@ -214,6 +232,7 @@ bool osg_gateway_enable(osg_gateway_t *g,const osg_gateway_identity_t *id) {
     }
     osg_gateway_slot_t *entry=&g->pending.slots[index];
     if(module>=0 && g->modules[module].online) entry->profile=g->modules[module].profile;
+    if(!entry->report_id) {entry->report_id=free_report_id(g);if(!entry->report_id) return false;}
     entry->order=enabled_count(&g->pending); entry->enabled=true; g->pending.generation++;
     return true;
 }
@@ -239,6 +258,9 @@ bool osg_gateway_update_profile(osg_gateway_t *g,const osg_gateway_identity_t *i
     int index=osg_gateway_find_slot(&g->pending,id),module=osg_gateway_find_module(g,id);
     if(index<0 || module<0 || !g->modules[module].online) return false;
     if(!osg_gateway_profile_equal(&g->pending.slots[index].profile,&g->modules[module].profile)) {
+        if(!has_inputs(&g->modules[module].profile)) {
+            (void)osg_gateway_disable(g,id);g->pending.slots[index].report_id=0;
+        } else if(!g->pending.slots[index].report_id) g->pending.slots[index].report_id=free_report_id(g);
         g->pending.slots[index].profile=g->modules[module].profile; g->pending.generation++;
     }
     return true;

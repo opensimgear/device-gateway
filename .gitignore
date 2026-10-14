@@ -1,5 +1,6 @@
 .DS_Store
 .e2e/
+.research/
 .simulation/
 .build/
 build/

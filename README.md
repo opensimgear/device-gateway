@@ -5,7 +5,7 @@ STM32G0B1 USB-to-CAN FD gateway with **USB-C, two parallel 4P4C powered CAN sock
 ## Implemented prototype
 
 - C firmware for `gateway_g0b1cb_v0_1_0`, with USB HID and CDC, a unique MCU-derived USB serial, and active CAN FD at 500 kbit/s arbitration / 2 Mbit/s data.
-- Automatic discovery, enrollment and logical route allocation for up to 32 remembered module identities. New identities append to a persistent ordered controller list; enabled offline devices keep neutral HID collections.
+- Automatic discovery, enrollment and logical route allocation for up to 32 remembered module identities. New input identities append to a persistent ordered controller list; output-only identities retain guarded routes without a HID collection or report ID; enabled offline devices keep neutral HID collections.
 - One HID interface with a joystick top-level collection and stable report ID for each enabled module. Each profile supports up to eight 16-bit axes, four hats and 128 buttons. Host/game interpretation of multiple collections still needs physical testing.
 - Bounded CAN queues, sequence/lease checks, direct USB input ownership, 250 ms input timeout, 1.5 s presence timeout, and bus-off recovery.
 - CRC-protected device visibility and controller order stored in two independent flash pages with a commit marker written last. Automatic batched activation saves an exact generation before USB reconnects; explicit Disable/Enable/Remove retain or forget identities as requested.
@@ -33,8 +33,10 @@ report IDs and input definitions survive automatic additions, but Windows/game
 binding continuity still requires physical qualification, especially transitions
 between one and multiple collections. Software resource bounds are explicit,
 and excess announcements produce visible capacity diagnostics. Direct device
-USB ownership leaves gateway input neutral. The Pico simulator remains a legacy
-protocol-1 fixture with a separate adapter.
+USB ownership leaves gateway input neutral. The [Pico debug gateway](simulation/pico/README.md)
+reuses current gateway/device contracts for eight virtual devices, Cockpit input
+controls, physical USB HID, persistent settings and DCS-BIOS panel testing. Older
+protocol-1 Pico images retain their compatibility adapter.
 
 Cockpit can claim a module configuration draft, change input mappings/calibration,
 and apply or persist its settings over the current identity/session/lease-bound
@@ -51,7 +53,12 @@ fragments, with separate action dispatch and `targetAction` results. Actions rem
 reachable on online disabled controllers and direct-USB input owners after current
 lease status arrives. LED setters are volatile and do not claim settings, write flash
 or change HID descriptors. The gateway forwards action catalogues without retaining
-them in registry storage. See [milestone 1](https://github.com/opensimgear/cockpit/issues/13)
+them in registry storage. Per-endpoint claims/renewal/owned invocation/release
+use these same routes and prevent competing clients at the device. Independent
+device expiry or route loss applies its validated fallback; tokens remain private.
+Output-only modules enroll with `outputOnly:true` and `reportId:null`; Enable
+returns `input_not_supported`. Unchanged descriptors activate without USB
+reconnection. See the [ownership contract](https://github.com/opensimgear/protocol/blob/main/serial/output-ownership.md). See [milestone 1](https://github.com/opensimgear/cockpit/issues/13)
 and the [action contract](https://github.com/opensimgear/protocol/blob/main/serial/device-actions.md).
 
 The same guarded request/reply transport also carries `events state` and

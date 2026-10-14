@@ -98,3 +98,13 @@ Run `python3 firmware/tests/coverage.py` from the repository root with matching
 Clang, `llvm-cov` and `llvm-profdata` tools. The runner executes all portable tests
 and requires more than 70% line coverage in the CDC parser and module transaction
 dispatcher. CI runs the same gate with LLVM 18.
+
+Output-only regression checks valid zero-input profile enrollment, absence of a
+HID collection/report ID, Status reachability, rejection of empty Input and Enable,
+registry encode/decode bounds, unchanged descriptor activation, and zero↔input
+transitions preserving other controllers. The gateway forwards endpoint leases
+through ordinary guarded action requests; real-CAN device integration proves
+cached claims/renewals cannot extend TTL and expiry/route loss invokes fallback.
+Pico debug tests exercise the same handler for output-only/competing writers and
+disconnect/offline/reboot. The line gate now also measures `gateway.c` and
+`gateway_registry.c`, each required above 70%.

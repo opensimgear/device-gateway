@@ -51,7 +51,12 @@ const char *osg_gateway_cockpit_execute(osg_gateway_t *g,const osg_gateway_cockp
     if(r->epoch!=g->epoch) return "stale_epoch";
     bool ok=false;
     switch(r->action) {
-        case OSG_GW_COCKPIT_ENABLE: ok=osg_gateway_enable(g,&r->identity); break;
+        case OSG_GW_COCKPIT_ENABLE: {
+            int module=osg_gateway_find_module(g,&r->identity),slot=osg_gateway_find_slot(&g->pending,&r->identity);
+            const osg_gateway_profile_t *p=module>=0?&g->modules[module].profile:slot>=0?&g->pending.slots[slot].profile:NULL;
+            if(p && !p->button_count && !p->axis_count && !p->hat_count) return "input_not_supported";
+            ok=osg_gateway_enable(g,&r->identity);break;
+        }
         case OSG_GW_COCKPIT_DISABLE: ok=osg_gateway_disable(g,&r->identity); break;
         case OSG_GW_COCKPIT_FORGET: {
             int module=osg_gateway_find_module(g,&r->identity);
@@ -109,6 +114,7 @@ static size_t module_response(const osg_gateway_t *g,const char uid[25],uint32_t
         uint8_t report[OSG_GW_MAX_REPORT_SIZE]; osg_gateway_profile_neutral(&m->profile,report);
         if(enabled && match && g->running && m->online && !m->direct_usb && m->has_input) memcpy(report,m->report,sizeof report);
         char identity[33]; osg_gateway_identity_format(&m->identity,identity);
+        bool output_only=!m->profile.button_count && !m->profile.axis_count && !m->profile.hat_count;
         append(&w,"%s{\"identity\":\"%s\",\"online\":%s,\"directUsb\":%s,\"node\":%u,\"sourceNode\":%u,\"boot\":%lu,\"configurationGeneration\":%lu,\"lease\":%lu,\"profile\":{\"buttons\":%u,\"axes\":%u,\"hats\":%u,\"revision\":%u,\"axisUsage\":[",
             first?"":",",identity,boolean(m->online),boolean(m->direct_usb),m->node,m->source_node,(unsigned long)m->boot_session,(unsigned long)m->configuration_generation,(unsigned long)m->lease,
             m->profile.button_count,m->profile.axis_count,m->profile.hat_count,m->profile.revision);
@@ -120,7 +126,7 @@ static size_t module_response(const osg_gateway_t *g,const char uid[25],uint32_t
         append(&w,",\"profileMatch\":%s,\"hasInput\":%s,\"report\":\"",boolean(match),boolean(m->has_input));
         size_t length=osg_gateway_profile_report_size(&m->profile);
         for(size_t byte=0;byte<length;byte++) append(&w,"%02x",report[byte]);
-        append(&w,"\"}"); first=false;
+        append(&w,"\"%s}",output_only?",\"outputOnly\":true":""); first=false;
     }
     append(&w,"]}");
     if(target) append(&w,",\"%s\":%s",target_key,target);
