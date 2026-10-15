@@ -31,6 +31,7 @@ jobs:
             .research/pico/build/osg-pico-gateway.uf2.sha256
             .research/pico/build/firmware-manifest.json
             .research/pico/build/memory-audit.json
+            .research/pico/build/licenses/
   portable-tests:
     runs-on: ubuntu-24.04
     steps:

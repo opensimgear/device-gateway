@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -83,4 +83,17 @@ writeFileSync(resolve(build, 'memory-audit.json'), JSON.stringify(memory, null, 
 writeFileSync(resolve(build, 'firmware-manifest.json'), JSON.stringify({ firmwareVersion: '0.1.0', protocolVersion: 3,
   target: 'pico-debug', board: 'pico_w', mcu: 'rp2040', sdkCommit: commit(sdk), commonCommit: commit(common),
   deviceCommit: commit(device), maxVirtualDevices: 8, binaryBytes: binary.length, uf2Bytes: uf2.length, sha256, memory }, null, 2) + '\n');
+const notices = [
+  [resolve(repository, 'LICENSE'), 'LICENSE'],
+  [resolve(repository, 'THIRD_PARTY_NOTICES.md'), 'THIRD_PARTY_NOTICES.md'],
+  [resolve(repository, 'firmware/THIRD_PARTY.md'), 'firmware-THIRD_PARTY.md'],
+  [resolve(repository, 'firmware/shared-cyphal/vendor/libcanard/LICENSE'), 'libcanard-LICENSE'],
+  [resolve(repository, 'firmware/shared-cyphal/vendor/REGULATED_DSDL_LICENSE'), 'REGULATED_DSDL_LICENSE'],
+  [resolve(repository, 'firmware/shared-cyphal/generated/NUNAVUT_LICENSE.rst'), 'NUNAVUT_LICENSE.rst'],
+  [resolve(sdk, 'LICENSE.TXT'), 'pico-sdk-LICENSE.TXT'],
+  [resolve(sdk, 'lib/tinyusb/LICENSE'), 'tinyusb-LICENSE'],
+];
+const licenseDirectory = resolve(build, 'licenses');
+mkdirSync(licenseDirectory, { recursive: true });
+for (const [source, name] of notices) copyFileSync(source, resolve(licenseDirectory, name));
 console.log(`Built ${output} (${uf2.length} bytes; static RAM ${memory.staticRamBytes} bytes; SHA-256 ${sha256})`);

@@ -160,7 +160,7 @@ Static checks and cross-compilation establish source-level behaviour. No gateway
 
 [Protocol](https://github.com/opensimgear/protocol), [firmware-common](https://github.com/opensimgear/firmware-common), [device-template](https://github.com/opensimgear/device-template), [Cockpit](https://github.com/opensimgear/cockpit), and the [website](https://github.com/opensimgear/opensimgear.github.io) own their respective shared definitions and implementations. This gateway uses pinned common firmware dependencies; a checked-in shared Cyphal snapshot tracks the canonical protocol repository.
 
-No license grant is implied for newly authored OpenSimGear firmware and electronics. Included KiCad library data retains its [upstream license](electronics/boards/gateway/0.1.0/LICENSE-KICAD.md), and firmware dependencies retain their upstream notices. No public USB VID/PID allocation is claimed.
+Copyright © Ivan Gregurić Ortolan. All rights reserved for original OpenSimGear material while licensing is under review. The [temporary licensing policy](LICENSE) defines the current scope for firmware, electronics and other original material. Creative external contributions are suspended during review; [CONTRIBUTING.md](CONTRIBUTING.md) explains the policy for factual bug reports and questions. Included KiCad library data retains its [upstream license](electronics/boards/gateway/0.1.0/LICENSE-KICAD.md), and firmware dependencies retain their upstream licenses and notices. No public USB VID/PID allocation is claimed.
 
 PCB version **0.1.0** stays fixed while pre-live; see [PCB versioning](electronics/VERSIONING.md).
 

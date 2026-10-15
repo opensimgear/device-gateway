@@ -108,6 +108,11 @@ def main():
         for extension in ("kicad_pcb", "kicad_sch"):
             if not (directory / f"{args.board}.{extension}").is_file():
                 raise ValueError(f"Missing {args.board}.{extension} in {directory}")
+        notices = [repo / "LICENSE", repo / "THIRD_PARTY_NOTICES.md",
+                   directory / "LICENSE-KICAD.md"]
+        for notice in notices:
+            if not notice.is_file():
+                raise ValueError(f"Missing distribution notice: {notice}")
         output = (args.output_dir or repo.parent / ".research/jlcpcb").resolve()
         # Keep generated files out of the maintained board sources.
         if output == directory or directory in output.parents:
@@ -144,12 +149,17 @@ def main():
                     if not file.is_file() or not file.stat().st_size:
                         raise ValueError(f"Missing or empty fabrication export: {file.name}")
                     bundle.write(file, file.name)
+                for notice in notices:
+                    bundle.write(notice, notice.name)
             bom_path = temp / f"{stem}-bom.csv"
             cpl_path = temp / f"{stem}-cpl.csv"
             write_csv(bom_path, ["Comment", "Designator", "Footprint", "Manufacturer Part Number",
                                  "JLCPCB Part #", "Quantity"], bom)
             write_csv(cpl_path, ["Designator", "Mid X", "Mid Y", "Layer", "Rotation"], cpl)
-            for file in (archive, bom_path, cpl_path):
+            notice_paths = [temp / f"{stem}-{notice.name}" for notice in notices]
+            for notice, staged in zip(notices, notice_paths):
+                shutil.copy2(notice, staged)
+            for file in (archive, bom_path, cpl_path, *notice_paths):
                 shutil.move(str(file), str(output / file.name))
                 print(f"Created: {output / file.name}")
             print(f"Assembly: {len(cpl)} components in {len(bom)} BOM groups.")
