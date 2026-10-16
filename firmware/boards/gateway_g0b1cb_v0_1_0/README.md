@@ -1,5 +1,9 @@
 # Gateway STM32G0B1CB v0.1.0
 
+## Development status and disclaimer
+
+This project is heavily under development and is not ready for use. Use it entirely at your own risk. To the fullest extent permitted by applicable law, the authors and contributors disclaim all liability for any damage, loss, or other issues arising from its use.
+
 The port targets STM32G0B1CBT6 in LQFP48, with 128 KiB flash and the guaranteed
 128 KiB SRAM region. System and CAN clocks are 64 MHz from HSI16 plus PLL.
 USB runs from HSI48 with USB SOF clock recovery. No external crystal is required.

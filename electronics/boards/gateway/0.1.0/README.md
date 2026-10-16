@@ -1,5 +1,9 @@
 # Gateway v0.1.0
 
+## Development status and disclaimer
+
+This project is heavily under development and is not ready for use. Use it entirely at your own risk. To the fullest extent permitted by applicable law, the authors and contributors disclaim all liability for any damage, loss, or other issues arising from its use.
+
 Open `gateway.kicad_pro` in **KiCad 10**. This revision develops the gateway around the reviewed STM32G0B1 starter core, adding protected 12 V injection and two physical **4P4C** modular CAN/power sockets. The board is a prototype; no assembly has been measured or fabricated. [Validation](VALIDATION.md) records actual static results and validation limits. [Fabrication](FABRICATION.md), [footprint review](FOOTPRINTS.md), [BOM](bom.csv), [schematic](review/schematic.pdf) and [copper preview](review/pcb.svg) and [1:1 assembly drawings](review/assembly.pdf) accompany the editable CAD.
 
 The connectors are four-position/four-contact jacks, often sold as RJ9/RJ10/RJ22 handset connectors. They are smaller than six-position RJ11/RJ12 sockets. They implement the user's final **4P4C everywhere** requirement. These powered sockets must never connect to telephone equipment. The former six-contact template ecosystem must be migrated before connecting a module; adapters or casual telephone-cord substitutions are not assumed safe.

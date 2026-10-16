@@ -1,5 +1,9 @@
 # Native gateway simulation
 
+## Development status and disclaimer
+
+This project is heavily under development and is not ready for use. Use it entirely at your own risk. To the fullest extent permitted by applicable law, the authors and contributors disclaim all liability for any damage, loss, or other issues arising from its use.
+
 This directory runs the gateway's production C firmware on macOS or Linux. It owns the simulated CAN bus and presents the normal gateway discovery and CDC protocol to Cockpit. Device instances are separate processes built by the `device-template` repository; Cockpit can already be running when the gateway and devices start.
 
 The production gateway registry, flash journal, configuration forwarding, CAN transfer handling, HID descriptor generation, and layout detach/attach lifecycle are linked directly into the executable. The simulation supplies a monotonic clock, file-backed flash, loopback CAN transport, and a local CDC connection. HID delivery completes inside the native process. It does not publish devices to the host operating system or emulate a physical USB bus, so simulated controllers do not appear in `hidutil list`.

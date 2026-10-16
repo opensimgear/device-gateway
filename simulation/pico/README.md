@@ -1,5 +1,9 @@
 # Pico W debug gateway
 
+## Development status and disclaimer
+
+This project is heavily under development and is not ready for use. Use it entirely at your own risk. To the fullest extent permitted by applicable law, the authors and contributors disclaim all liability for any damage, loss, or other issues arising from its use.
+
 The RP2040 Pico W is a self-contained USB debug gateway for Cockpit, hosting up to eight virtual devices. It reuses production gateway registry/lifecycle/HID logic and shared device acquisition, calibration, configuration, ordered events and actions. Its internal application-message bus exercises software behavior; CAN electrical and Cyphal frame transport remain separate native/STM32 tests.
 
 The current firmware uses CDC protocol 3 with an explicit Pico debug capability. Cockpit retains compatibility with older protocol-1 images. The old parser and USB-layout tests remain compatibility fixtures; `build.mjs` builds the current target.

@@ -1,5 +1,9 @@
 # Gateway module profiles
 
+## Development status and disclaimer
+
+This project is heavily under development and is not ready for use. Use it entirely at your own risk. To the fullest extent permitted by applicable law, the authors and contributors disclaim all liability for any damage, loss, or other issues arising from its use.
+
 The gateway learns each module's control counts, axis usages, neutral values and
 profile revision from its CAN announcement. Registering a module stores that
 profile against its permanent identity and HID slot. Applying a changed registry

@@ -1,5 +1,9 @@
 # Repository-owned end-to-end tests
 
+## Development status and disclaimer
+
+This project is heavily under development and is not ready for use. Use it entirely at your own risk. To the fullest extent permitted by applicable law, the authors and contributors disclaim all liability for any damage, loss, or other issues arising from its use.
+
 See [the acceptance record](VERIFICATION.md) for the completed integration run.
 
 Run from the repository root with Python 3.10+, Git and a C11 compiler:

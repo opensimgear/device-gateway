@@ -1,5 +1,9 @@
 # Gateway electronics
 
+## Development status and disclaimer
+
+This project is heavily under development and is not ready for use. Use it entirely at your own risk. To the fullest extent permitted by applicable law, the authors and contributors disclaim all liability for any damage, loss, or other issues arising from its use.
+
 [Gateway v0.1.0](boards/gateway/0.1.0/README.md) is the editable STM32G0B1 USB/CAN gateway prototype with USB-C, two parallel **4P4C** modular jacks and a center-positive 12 V barrel socket. It carries one CAN trunk; the ports are not independent CAN channels.
 
 The board includes protected 12 V trunk injection and separate MCU branch protection, USB/bus supply selection with reverse blocking, SWD and reset. CAD, BOM, static checks and fabrication exports live together in the revision directory. Physical qualification and fabrication approval are separate gates.
