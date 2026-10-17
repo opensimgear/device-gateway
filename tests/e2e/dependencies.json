@@ -1,7 +1,7 @@
 {
   "device-template": {
     "url": "https://github.com/opensimgear/device-template.git",
-    "ref": "53b0c19c76bbb091bd09a325642030611a41bfc4"
+    "ref": "74cd82483524ba441ec0733ff148aa1bf3022fc1"
   },
   "cockpit": {
     "url": "https://github.com/opensimgear/cockpit.git",
@@ -9,6 +9,6 @@
   },
   "firmware-common": {
     "url": "https://github.com/opensimgear/firmware-common.git",
-    "ref": "6ba8ad0c3c0a35fce2c9f0e256503ebba3957976"
+    "ref": "b76fa216c5a48299139de7ffb1b41817d91a219b"
   }
 }
