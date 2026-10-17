@@ -68,7 +68,7 @@ osg_gateway_layout_event_t osg_debug_tick(osg_debug_gateway_t *g,uint32_t now,bo
 }
 bool osg_debug_layout_activate(osg_debug_gateway_t *g) {
     osg_gateway_set_running(&g->core,false);
-    return osg_gateway_activate_prepared(&g->core,&g->layout.target,true,&g->layout.activation);
+    return osg_gateway_layout_activate(&g->layout,&g->core,g->now);
 }
 static osg_virtual_device_t *device(osg_debug_gateway_t *g,const osg_gateway_identity_t *identity) {
     for(unsigned i=0;i<OSG_DEBUG_DEVICE_COUNT;i++) if(g->devices[i].occupied && osg_gateway_identity_equal(&g->devices[i].identity,identity)) return &g->devices[i];

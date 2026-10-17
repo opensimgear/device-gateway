@@ -48,7 +48,8 @@ def main():
         data = json.loads(subprocess.check_output([cov, 'export', str(output / 'osg_gateway_test'), f'-instr-profile={profile}'], text=True))
         (output / 'coverage.json').write_text(json.dumps(data))
         targets = {str(REPO / 'firmware/src' / name) for name in
-                   ('gateway_cockpit.c', 'gateway_config.c', 'gateway.c', 'gateway_registry.c')}
+                   ('gateway_cockpit.c', 'gateway_config.c', 'gateway.c', 'gateway_registry.c',
+                    'gateway_layout.c', 'gateway_publication.c')}
         measured = set()
         for source in data['data'][0]['files']:
             if source['filename'] not in targets:

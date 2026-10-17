@@ -1,7 +1,7 @@
 # Portable gateway core
 
 `gateway.c`, `gateway_registry.c`, `gateway_journal.c`, `gateway_cockpit.c`,
-`gateway_config.c` and `gateway_layout.c` are allocation-free C11. The STM32 and
+`gateway_config.c`, `gateway_layout.c` and `gateway_publication.c` are allocation-free C11. The STM32 and
 native simulation adapt CAN frames, USB, time and persistent storage around the
 same code. One event loop owns mutations; callbacks must not modify the core
 concurrently. Rejected frames do not refresh their source's health.
@@ -42,8 +42,9 @@ snapshot before scheduling a descriptor change. All valid profiles at the
 size bound and maximum-profile tests enforce that admission guarantee.
 
 For DETACH, the adapter first disconnects USB, invalidates reports/cancels routed
-configuration, calls `osg_gateway_activate_prepared()` with `layout.target` and
-`layout.activation`, and rebuilds the descriptor. USB must
+configuration, calls `osg_gateway_layout_activate()` with the current monotonic
+clock, and rebuilds the descriptor. This entry point rechecks the exact native
+publication transition and records one-shot admission immediately before IO. USB must
 continue returning its old cached descriptor until disconnected. Reattachment
 follows at least 250 ms later, and live input requires fresh CAN state. Additional
 announcements after save queue another transaction; they cannot enter the saved
@@ -67,6 +68,37 @@ Reverting a failed change clears the obsolete error. Repeated unchanged
 announcements do not write flash or reconnect. Serial/configuration drain gets a
 100 ms grace; a non-reading host cannot block detach indefinitely (maximum an
 additional second). The worker runs with Cockpit and CDC disconnected.
+
+## Volatile publication owner
+
+`pending` is staged persistent intent, `configured` is the last saved registry,
+and `active` is the actual effective descriptor. Only configured intent reaches
+the persistence callback. `gateway_publication.c` resolves a current snapshot
+revision and two bounded slot masks into exact native UID/boot/configuration/full
+profile/route tuples. The shared firmware-common helper captures the original
+state and fences apply, renewal, release, autonomous expiry and restoration.
+
+An owned overlay changes HID collection visibility without changing configured
+enabled choices, report IDs, profiles or order. Unrelated arrivals save their
+configured registry and are merged around the overlay. Restoration rederives
+from current configured state and retains those arrivals. Unknown actual state
+blocks acquisition; a newer independent descriptor is preserved. Affected input
+configuration and composite lifecycle writers are busy. Events and output actions
+remain independent.
+
+The board initializes its publisher identity before advertising the capability.
+Use `osg_gateway_cockpit_execute_at()` with the authoritative monotonic clock;
+the legacy no-clock wrapper rejects publication verbs. The exact scheduled
+reconnect is bounded at 1500 ms. Real VBUS/DTR/suspend loss revokes ownership,
+and missing expected reattachment cannot hold it indefinitely. Delivery checks
+the publication phase independently of USB run state, so expiry blocks owned
+input even while restoration waits for descriptor IO. No boot path resumes leases.
+
+See the canonical protocol's `serial/controller-publication-override.md` and
+`firmware/tests/publication_validation.py` for the grammar and hardware-free
+sanitizer/coverage runner. The portable helper copy is pinned in
+`shared-publication/README.md`; the Pico debug role does not advertise this CAN
+gateway capability.
 
 ## HID collections and reports
 

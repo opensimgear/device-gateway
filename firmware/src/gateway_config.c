@@ -1,4 +1,5 @@
 #include "opensimgear/gateway_config.h"
+#include "opensimgear/gateway_publication.h"
 #include <string.h>
 
 static bool live(const osg_gateway_config_t *c,const osg_gateway_t *g) {
@@ -17,6 +18,9 @@ const char *osg_gateway_config_start(osg_gateway_config_t *c,const osg_gateway_t
     if(!c || !g || !r || !r->id || (r->action!=OSG_GW_COCKPIT_CONFIG && r->action!=OSG_GW_COCKPIT_ACTION && r->action!=OSG_GW_COCKPIT_EVENTS)) return "invalid_request";
     if(c->busy) return "configuration_busy";
     if(r->epoch!=g->epoch) return "stale_epoch";
+    /* Management events and outputs stay independent. Input configuration has
+     * a separate writer and cannot change a captured publication tuple. */
+    if(r->action==OSG_GW_COCKPIT_CONFIG && osg_gateway_publication_busy(g,&r->identity)) return "publication_busy";
     int index=osg_gateway_find_module(g,&r->identity);
     if(index<0 || !g->modules[index].online) return "module_offline";
     const osg_gateway_module_t *m=&g->modules[index];

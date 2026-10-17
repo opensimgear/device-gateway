@@ -6,6 +6,7 @@
  * CAN transfer handling and HID descriptors are production firmware sources. */
 #include "opensimgear/gateway_config.h"
 #include "opensimgear/gateway_layout.h"
+#include "opensimgear/gateway_publication.h"
 #include "opensimgear/line.h"
 #include "gateway_journal.h"
 #include <assert.h>
@@ -111,6 +112,7 @@ static void boot_gateway(void) {
     if(osg_journal_load(&flash,record,sizeof record,&n,&epoch)) { assert(osg_gateway_registry_decode(record,n,&registry)); restored=&registry; }
     else assert(osg_journal_erased(&flash));
     assert(epoch<=UINT32_MAX-65536U); assert(osg_gateway_init(&simulation.gateway,epoch+65536U,restored));
+    assert(osg_gateway_publication_identity(&simulation.gateway,&simulation.gateway_identity));
     assert(persist(NULL,&simulation.gateway.pending)); assert(osg_cyphal_init(&simulation.gateway_can,&simulation.gateway_identity,simulation.gateway.epoch,
         "org.opensimgear.gateway",gateway_send,NULL));
     osg_gateway_config_cancel(&simulation.config); memset(&simulation.layout,0,sizeof simulation.layout);
@@ -142,7 +144,7 @@ static void tick(void) {
     if(event==OSG_GATEWAY_LAYOUT_DETACH) {
         osg_gateway_set_running(&simulation.gateway,false);
         publish_gateway(false); detach_cdc(); osg_gateway_config_cancel(&simulation.config);
-        (void)osg_gateway_activate_prepared(&simulation.gateway,&simulation.layout.target,true,&simulation.layout.activation); prepare_descriptor();
+        (void)osg_gateway_layout_activate(&simulation.layout,&simulation.gateway,simulation.now); prepare_descriptor();
     } else if(event==OSG_GATEWAY_LAYOUT_ATTACH) {
         osg_gateway_set_running(&simulation.gateway,!simulation.disconnected);
         publish_gateway(true);
@@ -193,6 +195,7 @@ static void admin(const char *line) {
     else if(sscanf(command,"advance %u",&a)==1 && a<=60000) advance(a);
     else if(sscanf(command,"disconnect %u",&a)==1 && a<=1) {
         simulation.disconnected=a!=0;
+        if(simulation.disconnected) osg_gateway_publication_transport_lost(&simulation.gateway,simulation.now);
         osg_gateway_set_running(&simulation.gateway,!simulation.disconnected && !simulation.layout.detached);
         advance(30);
     } else if(sscanf(command,"drop_reply %u",&a)==1 && a<=1) simulation.drop_reply=a!=0;
@@ -215,11 +218,12 @@ static void command(const char *line) {
             if(stopped) return;
             assert(osg_gateway_config_result(&simulation.config,&error,&json));
         }
-    } else error=osg_gateway_cockpit_execute(&simulation.gateway,&request,NULL,NULL,&apply);
+    } else error=osg_gateway_cockpit_execute_at(&simulation.gateway,&request,NULL,NULL,&apply,simulation.now);
     size_t n=request.action==OSG_GW_COCKPIT_EVENTS ?
         osg_gateway_cockpit_events_response(&simulation.gateway,gateway_uid,request.id,error,json,simulation.response,sizeof simulation.response) : request.action==OSG_GW_COCKPIT_ACTION ?
         osg_gateway_cockpit_action_response(&simulation.gateway,gateway_uid,request.id,error,json,simulation.response,sizeof simulation.response) :
-        osg_gateway_cockpit_config_response(&simulation.gateway,gateway_uid,request.id,error,json,simulation.response,sizeof simulation.response);
+        request.action==OSG_GW_COCKPIT_CONFIG ? osg_gateway_cockpit_config_response(&simulation.gateway,gateway_uid,request.id,error,json,simulation.response,sizeof simulation.response) :
+        osg_gateway_cockpit_request_response(&simulation.gateway,gateway_uid,&request,error,simulation.response,sizeof simulation.response);
     if(n) fputs(simulation.response,response_output);
     else fprintf(response_output,"{\"id\":%u,\"ok\":false,\"error\":\"response_overflow\",\"state\":null}\n",request.id);
     fflush(response_output);
@@ -364,6 +368,7 @@ static void receive_bus(void) {
 static bool cdc_drained(void) {return local.output_offset==local.output_length;}
 static void detach_cdc(void) {
     if(local.cdc>=0) {close(local.cdc);local.cdc=-1;}
+    if(!simulation.layout.detached && !simulation.gateway.publication.expected_reconnect) osg_gateway_publication_transport_lost(&simulation.gateway,simulation.now);
     local.output_offset=local.output_length=0;osg_line_init(&local.cdc_line,local.cdc_input,sizeof local.cdc_input);
 }
 static void publish_gateway(bool publish) {
@@ -399,6 +404,7 @@ static void cdc_reply(const char *line) {
     memcpy(local.output,bytes,length);local.output_length=length;local.output_offset=0;free(bytes);
 }
 static void serve_cdc(void) {
+    osg_gateway_publication_reconnect(&simulation.gateway,simulation.now,local.cdc>=0);
     if(local.cdc<0 && !simulation.layout.detached) {
         int fd=accept(local.listener,NULL,NULL);
         if(fd>=0) {nonblocking(fd);local.cdc=fd;osg_line_init(&local.cdc_line,local.cdc_input,sizeof local.cdc_input);}

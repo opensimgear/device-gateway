@@ -12,11 +12,12 @@ mkdirSync(build, { recursive: true });
 if (!existsSync(resolve(common, 'include/opensimgear/events.h')) || !existsSync(resolve(device, 'firmware/src/runtime_config.c'))) {
   throw new Error('Initialize pinned dependencies with firmware/build.mjs, or set OSG_COMMON_SOURCE and OSG_DEVICE_SOURCE.');
 }
-const includes = ['src', '../../../firmware/include', '../../../firmware/shared-cyphal/include', '../../../firmware/shared-cyphal/generated'].map(path => resolve(firmware, path));
+const includes = ['src', '../../../firmware/include', '../../../firmware/shared-publication/include', '../../../firmware/shared-cyphal/include', '../../../firmware/shared-cyphal/generated'].map(path => resolve(firmware, path));
 includes.push(resolve(common, 'include'), resolve(device, 'firmware/include'));
 const sources = [
   'src/debug_gateway.c', 'src/virtual_device.c',
-  ...['gateway.c', 'gateway_registry.c', 'gateway_layout.c', 'gateway_cockpit.c', 'gateway_journal.c'].map(path => `../../../firmware/src/${path}`),
+  ...['gateway.c', 'gateway_registry.c', 'gateway_layout.c', 'gateway_cockpit.c', 'gateway_journal.c', 'gateway_publication.c'].map(path => `../../../firmware/src/${path}`),
+  '../../../firmware/shared-publication/src/publication.c',
   '../../../firmware/shared-cyphal/src/gateway_protocol.c',
 ].map(path => resolve(firmware, path));
 sources.push(...['runtime_config.c', 'device_actions.c'].map(path => resolve(device, 'firmware/src', path)),

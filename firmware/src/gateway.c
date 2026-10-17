@@ -1,7 +1,12 @@
 #include "opensimgear/gateway.h"
+#include "opensimgear/gateway_publication.h"
 #include <string.h>
 static uint8_t free_report_id(const osg_gateway_t *);
+static bool disable_unchecked(osg_gateway_t *,const osg_gateway_identity_t *);
 static bool has_inputs(const osg_gateway_profile_t *p) {return p->button_count || p->axis_count || p->hat_count;}
+void osg_gateway_publication_changed(osg_gateway_t *g) {
+    if(g && g->publication_revision) g->publication_revision=g->publication_revision==UINT32_MAX?0:g->publication_revision+1U;
+}
 
 int osg_gateway_find_module(const osg_gateway_t *g,const osg_gateway_identity_t *id) {
     if(!g || !id) return -1;
@@ -21,8 +26,8 @@ static void revoke(osg_gateway_module_t *m) {
 }
 bool osg_gateway_init(osg_gateway_t *g,uint32_t epoch,const osg_gateway_registry_t *r) {
     if(!g || !epoch || (r && !osg_gateway_registry_valid(r))) return false;
-    memset(g,0,sizeof *g); g->epoch=epoch;
-    if(r) g->pending=g->active=*r;
+    memset(g,0,sizeof *g); g->epoch=epoch;g->publication_revision=1;g->publication.route_generation=1;
+    if(r) g->pending=g->configured=g->active=*r;
     for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) if(g->active.slots[i].occupied) {
         g->modules[i].occupied=true; g->modules[i].identity=g->active.slots[i].identity;
         g->modules[i].profile=g->active.slots[i].profile;
@@ -34,9 +39,10 @@ void osg_gateway_tick(osg_gateway_t *g,uint32_t now) {
     for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) {
         osg_gateway_module_t *m=&g->modules[i];
         if(!m->occupied || !m->online) continue;
-        if((uint32_t)(now-m->last_seen)>=OSG_GW_OFFLINE_TIMEOUT_MS) revoke(m);
+        if((uint32_t)(now-m->last_seen)>=OSG_GW_OFFLINE_TIMEOUT_MS) { revoke(m);osg_gateway_publication_changed(g); }
         else if(m->has_input && (uint32_t)(now-m->last_input)>=OSG_GW_INPUT_TIMEOUT_MS) neutral(m);
     }
+    osg_gateway_publication_tick(g,now);
 }
 void osg_gateway_set_running(osg_gateway_t *g,bool running) {
     if(!g) return;
@@ -51,6 +57,8 @@ void osg_gateway_bus_reset(osg_gateway_t *g) {
     if(!g) return;
     g->running=false; g->run_generation++;
     for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) revoke(&g->modules[i]);
+    osg_gateway_publication_changed(g);
+    osg_gateway_publication_tick(g,g->publication.lease.now);
 }
 static int available_inventory(const osg_gateway_t *g,uint32_t now) {
     int candidate=-1; uint32_t oldest=0;
@@ -114,7 +122,7 @@ osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *g,const osg_gate
             osg_gateway_module_t *other=&g->modules[i];
             if(other->occupied && other->online && other->source_node==msg.source_node &&
                !osg_gateway_identity_equal(&other->identity,&msg.identity)) {
-                revoke(other); goto rejected;
+                revoke(other);osg_gateway_publication_changed(g);osg_gateway_publication_tick(g,now); goto rejected;
             }
         }
         if(index<0) index=available_inventory(g,now);
@@ -139,7 +147,9 @@ osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *g,const osg_gate
             m->occupied=true; m->identity=msg.identity; m->profile=msg.profile;
             m->boot_session=msg.boot_session; m->node=node; m->source_node=msg.source_node; m->lease=lease;
             m->configuration_generation=msg.configuration_generation;
+            osg_gateway_publication_changed(g);
         }
+        if(m->direct_usb!=msg.direct_usb) osg_gateway_publication_changed(g);
         m->online=true; m->last_seen=now; m->direct_usb=msg.direct_usb;
         /* First-seen identities enroll automatically. Explicitly disabled identities
          * remain disabled; live enabled profiles stay frozen until update-profile. */
@@ -149,12 +159,17 @@ osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *g,const osg_gate
                 for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) if(!g->pending.slots[i].occupied) {registered=(int)i;break;}
                 if(registered<0) {g->admission_error="capacity_exceeded";g->rejected_identity=m->identity;g->rejected_announcements++;goto rejected;}
                 g->pending.slots[registered]=(osg_gateway_slot_t){.occupied=true,.identity=m->identity,.profile=m->profile,.order=255};
-                g->pending.generation++;
+                g->pending.generation++;osg_gateway_publication_changed(g);
             } else {
-                (void)osg_gateway_disable(g,&m->identity);
+                /* A native profile losing all input revokes the composite
+                 * overlay before staging the independent configured writer.
+                 * Restore uses the old configured tuple before this draft saves. */
+                if(g->pending.slots[registered].enabled && g->publication.lease.phase==OSG_PUBLICATION_OWNED)
+                    (void)osg_gateway_publication_release(g,g->publication.lease.owner,g->publication.lease.ticket.lease_id,now);
+                (void)disable_unchecked(g,&m->identity);
                 osg_gateway_slot_t *slot=&g->pending.slots[registered];
                 if(!osg_gateway_profile_equal(&slot->profile,&m->profile) || slot->report_id) {
-                    slot->profile=m->profile;slot->report_id=0;g->pending.generation++;
+                    slot->profile=m->profile;slot->report_id=0;g->pending.generation++;osg_gateway_publication_changed(g);
                 }
             }
         } else if(registered<0) {
@@ -165,7 +180,7 @@ osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *g,const osg_gate
         } else if(!g->pending.slots[registered].enabled &&
                   !osg_gateway_profile_equal(&g->pending.slots[registered].profile,&m->profile)) {
             if(!g->pending.slots[registered].report_id) g->pending.slots[registered].report_id=free_report_id(g);
-            g->pending.slots[registered].profile=m->profile; g->pending.generation++;
+            g->pending.slots[registered].profile=m->profile; g->pending.generation++;osg_gateway_publication_changed(g);
         }
         if(g->admission_error && osg_gateway_identity_equal(&g->rejected_identity,&m->identity)) {
             g->admission_error=NULL; memset(&g->rejected_identity,0,sizeof g->rejected_identity);
@@ -174,6 +189,7 @@ osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *g,const osg_gate
         osg_gateway_message_t assignment={.type=OSG_GW_ASSIGN,.node=m->node,
             .identity=m->identity,.boot_session=m->boot_session,.lease=m->lease,.gateway_epoch=g->epoch};
         *reply=assignment;
+        osg_gateway_publication_tick(g,now);
         g->accepted_frames++; return OSG_GW_RX_ASSIGNMENT;
     }
     if(index<0) goto rejected;
@@ -184,6 +200,7 @@ osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *g,const osg_gate
        (msg.type==OSG_GW_INPUT && !osg_gateway_profile_report_valid(&m->profile,msg.report))) goto rejected;
     m->sequence=msg.sequence; m->has_sequence=true; m->last_seen=now;
     if(msg.type==OSG_GW_HEARTBEAT) {
+        if(m->direct_usb!=msg.direct_usb) osg_gateway_publication_changed(g);
         m->direct_usb=msg.direct_usb;
         if(m->direct_usb) neutral(m);
     } else {
@@ -193,6 +210,7 @@ osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *g,const osg_gate
             m->last_input=now; m->input_sequence=msg.sequence;
         }
     }
+    osg_gateway_publication_tick(g,now);
     g->accepted_frames++; return OSG_GW_RX_ACCEPTED;
 rejected:
     g->rejected_frames++; return OSG_GW_RX_REJECTED;
@@ -218,6 +236,7 @@ static uint8_t free_report_id(const osg_gateway_t *g) {
 }
 bool osg_gateway_enable(osg_gateway_t *g,const osg_gateway_identity_t *id) {
     if(!g || !id) return false;
+    if(osg_gateway_publication_busy(g,id)) return false;
     int index=osg_gateway_find_slot(&g->pending,id),module=osg_gateway_find_module(g,id);
     const osg_gateway_profile_t *profile=module>=0?&g->modules[module].profile:index>=0?&g->pending.slots[index].profile:NULL;
     if(!profile || !has_inputs(profile)) return false;
@@ -233,35 +252,41 @@ bool osg_gateway_enable(osg_gateway_t *g,const osg_gateway_identity_t *id) {
     osg_gateway_slot_t *entry=&g->pending.slots[index];
     if(module>=0 && g->modules[module].online) entry->profile=g->modules[module].profile;
     if(!entry->report_id) {entry->report_id=free_report_id(g);if(!entry->report_id) return false;}
-    entry->order=enabled_count(&g->pending); entry->enabled=true; g->pending.generation++;
+    entry->order=enabled_count(&g->pending); entry->enabled=true; g->pending.generation++;osg_gateway_publication_changed(g);
     return true;
 }
 bool osg_gateway_disable(osg_gateway_t *g,const osg_gateway_identity_t *id) {
     if(!g || !id) return false;
+    if(osg_gateway_publication_busy(g,NULL)) return false;
+    return disable_unchecked(g,id);
+}
+static bool disable_unchecked(osg_gateway_t *g,const osg_gateway_identity_t *id) {
     int index=osg_gateway_find_slot(&g->pending,id); if(index<0) return false;
     osg_gateway_slot_t *entry=&g->pending.slots[index];
     if(!entry->enabled) return true;
     for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++)
         if(g->pending.slots[i].occupied && g->pending.slots[i].enabled && g->pending.slots[i].order>entry->order)
             g->pending.slots[i].order--;
-    entry->enabled=false; entry->order=255; g->pending.generation++; return true;
+    entry->enabled=false; entry->order=255; g->pending.generation++;osg_gateway_publication_changed(g); return true;
 }
 bool osg_gateway_forget(osg_gateway_t *g,const osg_gateway_identity_t *id) {
     if(!g || !id) return false;
+    if(osg_gateway_publication_busy(g,NULL)) return false;
     int index=osg_gateway_find_slot(&g->pending,id),module=osg_gateway_find_module(g,id);
     if(index<0 || (module>=0 && g->modules[module].online)) return false;
     (void)osg_gateway_disable(g,id);
-    memset(&g->pending.slots[index],0,sizeof g->pending.slots[index]); g->pending.generation++; return true;
+    memset(&g->pending.slots[index],0,sizeof g->pending.slots[index]); g->pending.generation++;osg_gateway_publication_changed(g); return true;
 }
 bool osg_gateway_update_profile(osg_gateway_t *g,const osg_gateway_identity_t *id) {
     if(!g || !id) return false;
+    if(osg_gateway_publication_busy(g,NULL)) return false;
     int index=osg_gateway_find_slot(&g->pending,id),module=osg_gateway_find_module(g,id);
     if(index<0 || module<0 || !g->modules[module].online) return false;
     if(!osg_gateway_profile_equal(&g->pending.slots[index].profile,&g->modules[module].profile)) {
         if(!has_inputs(&g->modules[module].profile)) {
             (void)osg_gateway_disable(g,id);g->pending.slots[index].report_id=0;
         } else if(!g->pending.slots[index].report_id) g->pending.slots[index].report_id=free_report_id(g);
-        g->pending.slots[index].profile=g->modules[module].profile; g->pending.generation++;
+        g->pending.slots[index].profile=g->modules[module].profile; g->pending.generation++;osg_gateway_publication_changed(g);
     }
     return true;
 }
@@ -272,7 +297,7 @@ bool osg_gateway_unregister(osg_gateway_t *g,const osg_gateway_identity_t *id) {
 bool osg_gateway_needs_apply(const osg_gateway_t *g) {
     if(!g) return false;
     for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) {
-        const osg_gateway_slot_t *a=&g->active.slots[i],*b=&g->pending.slots[i];
+        const osg_gateway_slot_t *a=&g->configured.slots[i],*b=&g->pending.slots[i];
         if(a->occupied!=b->occupied || (a->occupied &&
            (a->enabled!=b->enabled || a->order!=b->order || a->report_id!=b->report_id ||
             !osg_gateway_identity_equal(&a->identity,&b->identity) || !osg_gateway_profile_equal(&a->profile,&b->profile)))) return true;
@@ -322,6 +347,7 @@ bool osg_gateway_activate_prepared(osg_gateway_t *g,const osg_gateway_registry_t
     }
     plan->reserved=false; plan->count=0;
     g->active=*r;
+    osg_gateway_publication_changed(g);
     for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) if(g->modules[i].occupied && !g->modules[i].online &&
         osg_gateway_find_slot(&g->active,&g->modules[i].identity)<0 && osg_gateway_find_slot(&g->pending,&g->modules[i].identity)<0)
         memset(&g->modules[i],0,sizeof g->modules[i]);
@@ -336,7 +362,7 @@ bool osg_gateway_activate(osg_gateway_t *g,const osg_gateway_registry_t *r,bool 
     return osg_gateway_activate_prepared(g,r,stop_input,&plan);
 }
 void osg_gateway_apply_layout(osg_gateway_t *g) {
-    if(g) osg_gateway_activate(g,&g->pending,true);
+    if(g && osg_gateway_activate(g,&g->pending,true)) g->configured=g->pending;
 }
 size_t osg_gateway_report(const osg_gateway_t *g,unsigned slot,uint8_t *out,size_t capacity) {
     if(!g || !out || slot>=OSG_GW_MAX_MODULES || (!g->active.slots[slot].occupied || !g->active.slots[slot].enabled)) return 0;
@@ -348,7 +374,7 @@ size_t osg_gateway_report(const osg_gateway_t *g,unsigned slot,uint8_t *out,size
     int module=osg_gateway_find_module(g,&s->identity);
     if(module>=0) {
         const osg_gateway_module_t *m=&g->modules[module];
-        if(g->running && m->online && !m->direct_usb && m->has_input &&
+        if(g->running && osg_gateway_publication_deliverable(g,&s->identity) && m->online && !m->direct_usb && m->has_input &&
            osg_gateway_profile_equal(&m->profile,&s->profile)) memcpy(out,m->report,length);
     }
     return length;
@@ -362,7 +388,7 @@ size_t osg_gateway_delivery_prepare(const osg_gateway_t *g,unsigned slot,uint8_t
     int index=osg_gateway_find_module(g,&s->identity);
     if(index<0) return length;
     const osg_gateway_module_t *m=&g->modules[index];
-    if(!g->running || !m->online || m->direct_usb || !m->has_input || !osg_gateway_profile_equal(&m->profile,&s->profile)) return length;
+    if(!g->running || !osg_gateway_publication_deliverable(g,&s->identity) || !m->online || m->direct_usb || !m->has_input || !osg_gateway_profile_equal(&m->profile,&s->profile)) return length;
     *delivery=(osg_gateway_delivery_t){.valid=true,.slot=(uint8_t)slot,.node=m->node,.length=(uint8_t)length,
         .identity=m->identity,.boot_session=m->boot_session,.lease=m->lease,.sequence=m->input_sequence,
         .run_generation=g->run_generation,.delivery_generation=m->delivery_generation};
@@ -374,7 +400,7 @@ bool osg_gateway_delivery_complete(const osg_gateway_t *g,const osg_gateway_deli
        d->slot>=OSG_GW_MAX_MODULES || length!=(size_t)d->length+1 || delivered[0]!=g->active.slots[d->slot].report_id ||
        memcmp(delivered+1,d->report,d->length)) return false;
     const osg_gateway_slot_t *s=&g->active.slots[d->slot];
-    if(!s->occupied || !s->enabled || !osg_gateway_identity_equal(&s->identity,&d->identity)) return false;
+    if(!s->occupied || !s->enabled || !osg_gateway_identity_equal(&s->identity,&d->identity) || !osg_gateway_publication_deliverable(g,&s->identity)) return false;
     int index=osg_gateway_find_module(g,&d->identity);
     if(index<0) return false;
     const osg_gateway_module_t *m=&g->modules[index];

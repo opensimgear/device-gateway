@@ -24,6 +24,8 @@ add_executable(osg-pico-gateway
   ${OSG_GATEWAY_FIRMWARE}/src/gateway_layout.c
   ${OSG_GATEWAY_FIRMWARE}/src/gateway_cockpit.c
   ${OSG_GATEWAY_FIRMWARE}/src/gateway_journal.c
+  ${OSG_GATEWAY_FIRMWARE}/src/gateway_publication.c
+  ${OSG_GATEWAY_FIRMWARE}/shared-publication/src/publication.c
   ${OSG_GATEWAY_FIRMWARE}/shared-cyphal/src/gateway_protocol.c
   ${OSG_DEVICE_SOURCE}/firmware/src/runtime_config.c
   ${OSG_DEVICE_SOURCE}/firmware/src/device_actions.c
@@ -35,6 +37,7 @@ add_executable(osg-pico-gateway
   ${OSG_COMMON_SOURCE}/src/usb/descriptor.c)
 target_include_directories(osg-pico-gateway PRIVATE src
   ${OSG_GATEWAY_FIRMWARE}/include
+  ${OSG_GATEWAY_FIRMWARE}/shared-publication/include
   ${OSG_GATEWAY_FIRMWARE}/shared-cyphal/include
   ${OSG_GATEWAY_FIRMWARE}/shared-cyphal/generated
   ${OSG_DEVICE_SOURCE}/firmware/include

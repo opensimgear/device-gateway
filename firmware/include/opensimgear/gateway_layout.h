@@ -1,10 +1,11 @@
 #pragma once
 #include "opensimgear/gateway.h"
 typedef struct {
-    bool pending,detached,draft;
+    bool pending,detached,draft,publication_guard,publication_apply,publication_restore,rederive;
     uint32_t apply_at,reattach_at,reconnects,observed_generation,draft_at,due_at,retry_at;
     osg_gateway_registry_t target;
     osg_gateway_activation_t activation;
+    osg_publication_ticket_t publication_ticket;
 } osg_gateway_layout_t;
 typedef enum { OSG_GATEWAY_LAYOUT_IDLE,OSG_GATEWAY_LAYOUT_DETACH,OSG_GATEWAY_LAYOUT_ATTACH } osg_gateway_layout_event_t;
 void osg_gateway_layout_schedule(osg_gateway_layout_t *,uint32_t now);
@@ -15,3 +16,5 @@ osg_gateway_layout_event_t osg_gateway_layout_tick(osg_gateway_layout_t *,uint32
  * Background work is independent of Cockpit and serial presence. */
 osg_gateway_layout_event_t osg_gateway_layout_service(osg_gateway_layout_t *,osg_gateway_t *,uint32_t now,
     bool response_drained,bool (*persist)(void *,const osg_gateway_registry_t *),void *context);
+/* Recheck and admit after physical disconnect, in the serialized board owner. */
+bool osg_gateway_layout_activate(osg_gateway_layout_t *,osg_gateway_t *,uint32_t now);

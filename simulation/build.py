@@ -42,10 +42,11 @@ def build(output_dir=None, common=None, sanitize=False):
     output.parent.mkdir(parents=True, exist_ok=True)
     sources = [Path(__file__).with_name('gateway.c'),
                *[firmware / 'src' / name for name in ('gateway.c', 'gateway_registry.c', 'gateway_journal.c',
-                  'gateway_cockpit.c', 'gateway_config.c', 'gateway_layout.c')],
+                  'gateway_cockpit.c', 'gateway_config.c', 'gateway_layout.c', 'gateway_publication.c')],
+               firmware / 'shared-publication' / 'src' / 'publication.c',
                common / 'src' / 'config' / 'line.c', cyphal / 'src' / 'cyphal.c',
                cyphal / 'src' / 'gateway_protocol.c', cyphal / 'vendor' / 'libcanard' / 'canard.c']
-    includes = [firmware / 'include', common / 'include', cyphal / 'include', cyphal / 'generated',
+    includes = [firmware / 'include', firmware / 'shared-publication' / 'include', common / 'include', cyphal / 'include', cyphal / 'generated',
                 cyphal / 'vendor' / 'libcanard']
     for source in sources:
         if not source.is_file():

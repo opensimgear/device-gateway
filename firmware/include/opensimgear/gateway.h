@@ -1,6 +1,7 @@
 #ifndef OSG_GATEWAY_H
 #define OSG_GATEWAY_H
 #include "opensimgear/gateway_registry.h"
+#include "opensimgear/publication.h"
 enum { OSG_GW_INPUT_TIMEOUT_MS=250, OSG_GW_OFFLINE_TIMEOUT_MS=1500,
        OSG_GW_DESCRIPTOR_CAPACITY=4096 };
 typedef struct {
@@ -12,9 +13,24 @@ typedef struct {
     uint64_t delivery_generation;
     uint8_t report[OSG_GW_MAX_REPORT_SIZE];
 } osg_gateway_module_t;
+
+/* Volatile composite-publisher owner. The exact profile and route are sealed
+ * locally; the host supplies only a current revision and bounded slot masks. */
+typedef struct {
+    osg_publication_t lease;
+    osg_gateway_profile_t profiles[OSG_GW_MAX_MODULES];
+    uint32_t module_leases[OSG_GW_MAX_MODULES];
+    uint8_t nodes[OSG_GW_MAX_MODULES],sources[OSG_GW_MAX_MODULES];
+    uint32_t claim_revision,target_mask,enabled_mask;
+    uint64_t route_generation;
+    uint32_t reconnect_until;
+    bool dirty,expected_reconnect;
+} osg_gateway_publication_t;
 typedef struct {
     osg_gateway_module_t modules[OSG_GW_MAX_MODULES];
-    osg_gateway_registry_t pending, active;
+    osg_gateway_registry_t pending, configured, active;
+    osg_gateway_publication_t publication;
+    uint32_t publication_revision;
     uint32_t epoch, lease_counter, reserved_leases;
     bool running, layout_transition;
     uint64_t run_generation;
@@ -47,6 +63,8 @@ bool osg_gateway_init(osg_gateway_t *, uint32_t epoch, const osg_gateway_registr
 void osg_gateway_tick(osg_gateway_t *, uint32_t now);
 void osg_gateway_set_running(osg_gateway_t *, bool);
 void osg_gateway_bus_reset(osg_gateway_t *); /* neutral + revoke every lease */
+/* Saturates at zero, disabling further claims rather than reusing a revision. */
+void osg_gateway_publication_changed(osg_gateway_t *);
 /* Only complete, decoded Cyphal transfers are passed to the application core. */
 osg_gateway_receive_result_t osg_gateway_receive(osg_gateway_t *, const osg_gateway_message_t *,
                                                 uint32_t now, osg_gateway_message_t *reply);
@@ -60,7 +78,8 @@ bool osg_gateway_update_profile(osg_gateway_t *, const osg_gateway_identity_t *)
 bool osg_gateway_register(osg_gateway_t *, const osg_gateway_identity_t *);
 bool osg_gateway_unregister(osg_gateway_t *, const osg_gateway_identity_t *);
 bool osg_gateway_needs_apply(const osg_gateway_t *);
-/* Call only after persistent save succeeds and USB has disconnected. */
+/* Compatibility helper: configured intent must already be persisted. Board
+ * adapters use layout_activate after USB disconnect, which also fences overlays. */
 void osg_gateway_apply_layout(osg_gateway_t *);
 bool osg_gateway_activation_prepare(const osg_gateway_t *, const osg_gateway_registry_t *, osg_gateway_activation_t *);
 bool osg_gateway_activation_reserve(osg_gateway_t *, osg_gateway_activation_t *);

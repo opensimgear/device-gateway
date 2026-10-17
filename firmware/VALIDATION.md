@@ -1,4 +1,32 @@
-# Radio contract validation — 2026-10-14
+# Volatile CAN controller publication validation — 2026-10-17
+
+The four production native C suites pass under AddressSanitizer/UndefinedBehaviorSanitizer
+and again under GCC coverage. Every gated source exceeds 70% line coverage:
+gateway 97.45%, parser 95.24%, configuration 91.18%, layout 98.36%, publication
+95.81%, registry 100%. `firmware/tests/publication_validation.py` reproduces this
+without fetching dependencies, opening devices or flashing hardware.
+
+The tests compare configured flash bytes/counters across override and restoration,
+actual HID descriptor collections (including CDC-only zero HID), enabled and
+disabled originals, unrelated persisted arrivals, saved-arrival cancellation,
+immediate delivery revocation, stale callbacks/transitions, unknown/newer-state
+preservation (including an independent configured writer before release or IO),
+lost native confirmation, wrap-safe autonomous expiry, bounded
+expected reconnect, true transport/module-boot revocation and all 32 compact
+mask targets within the existing command bound. Read-only owner inspection
+rejects a foreign owner's indistinguishable same-revision/masks claim after a
+lost reply, without extending its TTL. Temporary-enabled held input appears in
+actual snapshot reports even when persistent intent is disabled.
+
+Canonical real-C cross-firmware integration passes the existing three-seed mixed
+fault/stress corpus, input/ACK guards and panel-event/output contracts with
+sanitizers. The isolated production gateway simulator boundary passes 7/7 tests.
+Evidence is under `.research/publication-native/`; production formatter vectors
+are in the protocol repository's `test-vectors/controller-publication-override-v1.json`.
+This run did not cross-build the Arm board, enumerate actual USB controllers,
+flash hardware or change any physical qualification status.
+
+## Radio contract validation — 2026-10-14
 
 All three sanitizer native suites pass with generic string/axis envelope checks.
 Independent gateway/device process acceptance passes 15 checks, adding actual

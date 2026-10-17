@@ -4,6 +4,7 @@
 #include "opensimgear/gateway_cockpit.h"
 #include "opensimgear/gateway_config.h"
 #include "opensimgear/gateway_layout.h"
+#include "opensimgear/gateway_publication.h"
 #include "opensimgear/cyphal.h"
 #include "opensimgear/line.h"
 #include "tusb.h"
@@ -70,9 +71,9 @@ static void cockpit_command(const char *line,uint32_t now) {
     else if(request.action==OSG_GW_COCKPIT_CONFIG || request.action==OSG_GW_COCKPIT_ACTION || request.action==OSG_GW_COCKPIT_EVENTS) {
         error=osg_gateway_config_start(&configuration,&gateway,&request,now);
         if(!error) return;
-    } else error=osg_gateway_cockpit_execute(&gateway,&request,NULL,NULL,&apply);
+    } else error=osg_gateway_cockpit_execute_at(&gateway,&request,NULL,NULL,&apply,now);
     char uid[25]; board_uid_hex(uid);
-    response_size=osg_gateway_cockpit_response(&gateway,uid,request.id,error,response,sizeof response);
+    response_size=osg_gateway_cockpit_request_response(&gateway,uid,&request,error,response,sizeof response);
     if(!response_size) append("{\"id\":%lu,\"ok\":false,\"error\":\"response_overflow\",\"state\":null}\r\n",(unsigned long)request.id);
 }
 static void command(const char *line,uint32_t now) {
@@ -149,6 +150,7 @@ static void initialize_gateway(void) {
     char uid[33]; board_uid_hex(uid); memcpy(uid+24,"47575459",9);
     osg_gateway_identity_t unique_id;
     if(!osg_gateway_identity_parse(uid,&unique_id) ||
+       !osg_gateway_publication_identity(&gateway,&unique_id) ||
        !osg_cyphal_init(&cyphal,&unique_id,gateway.epoch,"org.opensimgear.gateway",can_send,NULL)) board_fault();
 }
 int main(void) {
@@ -156,16 +158,18 @@ int main(void) {
     const tusb_rhport_init_t usb={.role=TUSB_ROLE_DEVICE,.speed=TUSB_SPEED_FULL};
     if(!tusb_init(0,&usb)) board_fault();
     tud_disconnect();
-    bool attached=false,serial_open=false,active=false,was_can_fault=false;
+    bool attached=false,serial_open=false,active=false,was_can_fault=false,had_vbus=false;
     uint32_t previous_recoveries=0;
     char line_buffer[OSG_GW_CONFIG_COMMAND_CAPACITY+96]; osg_line_t line; osg_line_init(&line,line_buffer,sizeof line_buffer);
     for(;;) {
         uint32_t now=board_millis(); bool vbus=board_usb_present();
+        if(had_vbus && !vbus) osg_gateway_publication_transport_lost(&gateway,now);
+        had_vbus=vbus;
         osg_gateway_layout_event_t layout_event=osg_gateway_layout_service(&layout,&gateway,now,response_size==0 && !configuration.busy,layout_save,NULL);
         if(layout_event==OSG_GATEWAY_LAYOUT_DETACH) {
             tud_disconnect(); attached=false; active=false; invalidate_reports();
             osg_gateway_config_cancel(&configuration);
-            (void)osg_gateway_activate_prepared(&gateway,&layout.target,true,&layout.activation);
+            (void)osg_gateway_layout_activate(&layout,&gateway,now);
             if(!gateway_usb_prepare(&gateway)) board_fault();
         }
         bool should_attach=vbus && !layout.detached;
@@ -221,10 +225,14 @@ int main(void) {
             if(!response_size) append("{\"id\":%lu,\"ok\":false,\"error\":\"response_overflow\",\"state\":null}\r\n",(unsigned long)config_id);
         }
         bool connected=attached && tud_cdc_connected();
+        osg_gateway_publication_reconnect(&gateway,now,connected);
         if(connected!=serial_open) {
             serial_open=connected; osg_line_init(&line,line_buffer,sizeof line_buffer);
             response_size=response_offset=0;
-            if(!connected) osg_gateway_config_cancel(&configuration);
+            if(!connected) {
+                osg_gateway_config_cancel(&configuration);
+                if(!layout.detached && !gateway.publication.expected_reconnect) osg_gateway_publication_transport_lost(&gateway,now);
+            }
             /* DTR and the first host write may arrive in the same USB task.
              * Preserve that request on open; discard old input only on close. */
             if(!connected) tud_cdc_read_flush();
@@ -246,8 +254,11 @@ int main(void) {
     }
 }
 void tud_mount_cb(void) { invalidate_reports(); }
-void tud_umount_cb(void) { invalidate_reports(); }
-void tud_suspend_cb(bool remote_wakeup_en) { (void)remote_wakeup_en; invalidate_reports(); }
+void tud_umount_cb(void) {
+    invalidate_reports();
+    if(!layout.detached && !gateway.publication.expected_reconnect) osg_gateway_publication_transport_lost(&gateway,board_millis());
+}
+void tud_suspend_cb(bool remote_wakeup_en) { (void)remote_wakeup_en; invalidate_reports();osg_gateway_publication_transport_lost(&gateway,board_millis()); }
 void tud_resume_cb(void) { invalidate_reports(); }
 void tud_hid_report_complete_cb(uint8_t instance,const uint8_t *report,uint16_t length) {
     if(instance) return;

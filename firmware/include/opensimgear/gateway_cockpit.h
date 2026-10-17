@@ -5,13 +5,18 @@ enum { OSG_GW_COCKPIT_RESPONSE_CAPACITY=32768 };
 typedef enum { OSG_GW_COCKPIT_SNAPSHOT, OSG_GW_COCKPIT_REGISTER, OSG_GW_COCKPIT_UNREGISTER,
                OSG_GW_COCKPIT_SAVE, OSG_GW_COCKPIT_APPLY, OSG_GW_COCKPIT_CONFIG,
                OSG_GW_COCKPIT_ENABLE, OSG_GW_COCKPIT_DISABLE, OSG_GW_COCKPIT_FORGET, OSG_GW_COCKPIT_UPDATE_PROFILE,
-               OSG_GW_COCKPIT_ACTION,OSG_GW_COCKPIT_EVENTS } osg_gateway_cockpit_action_t;
+               OSG_GW_COCKPIT_ACTION,OSG_GW_COCKPIT_EVENTS,OSG_GW_COCKPIT_PUBLICATION } osg_gateway_cockpit_action_t;
+typedef enum { OSG_GW_PUBLICATION_DESCRIBE,OSG_GW_PUBLICATION_STATE,OSG_GW_PUBLICATION_CLAIM,
+               OSG_GW_PUBLICATION_RENEW,OSG_GW_PUBLICATION_RELEASE,OSG_GW_PUBLICATION_INSPECT } osg_gateway_publication_action_t;
 typedef struct {
     uint32_t id,epoch;
     osg_gateway_cockpit_action_t action;
     osg_gateway_identity_t identity;
     uint32_t boot;
     char command[OSG_GW_CONFIG_COMMAND_CAPACITY];
+    osg_gateway_publication_action_t publication_action;
+    uint8_t owner[16];
+    uint32_t publication_revision,target_mask,enabled_mask,publication_lease,ttl;
 } osg_gateway_cockpit_request_t;
 /* Exact ASCII decimal uint32 tokens; mutations include the expected boot epoch. */
 bool osg_gateway_cockpit_parse(const char *,osg_gateway_cockpit_request_t *);
@@ -19,9 +24,15 @@ bool osg_gateway_cockpit_parse(const char *,osg_gateway_cockpit_request_t *);
  * Legacy callback/apply arguments remain for linked portable callers. */
 const char *osg_gateway_cockpit_execute(osg_gateway_t *,const osg_gateway_cockpit_request_t *,
                                       bool (*persist)(void *),void *context,bool *apply);
+const char *osg_gateway_cockpit_execute_at(osg_gateway_t *,const osg_gateway_cockpit_request_t *,
+                                      bool (*persist)(void *),void *context,bool *apply,uint32_t now);
 /* One correlated JSON line. A failure returns0 and an empty string, never partial JSON. */
 size_t osg_gateway_cockpit_response(const osg_gateway_t *,const char uid[25],uint32_t id,
                                    const char *error,char *out,size_t capacity);
+/* Publication inspect emits a correlated, request-scoped owner match boolean.
+ * Snapshot status alone is never proof that an ambiguous claim was ours. */
+size_t osg_gateway_cockpit_request_response(const osg_gateway_t *,const char uid[25],
+    const osg_gateway_cockpit_request_t *,const char *error,char *out,size_t capacity);
 /* The target JSON is emitted only after a complete, route-guarded module response. */
 size_t osg_gateway_cockpit_config_response(const osg_gateway_t *,const char uid[25],uint32_t id,
     const char *error,const char *target_config,char *out,size_t capacity);

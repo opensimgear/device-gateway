@@ -1,5 +1,16 @@
 # Firmware validation
 
+The volatile publication owner has a hardware-free production validation runner:
+`python3 firmware/tests/publication_validation.py`. It builds all four C suites
+with ASan/UBSan, repeats them with GCC coverage, and requires more than 70% line
+coverage in the gateway/parser/configuration/layout/publication/registry sources.
+It fetches no dependencies and accesses no devices. Publication tests compare
+configured flash bytes and counters, actual descriptor collection removal/return,
+disabled-original restoration, unrelated arrival persistence, all 32 mask targets,
+duplicate immutable claims, stale transition cancellation, lost confirmation,
+autonomous expiry, bounded reconnect, real transport/module-boot loss, immediate
+delivery revocation, newer-state preservation and unknown-state attention.
+
 ## Development status and disclaimer
 
 This project is heavily under development and is not ready for use. Use it entirely at your own risk. To the fullest extent permitted by applicable law, the authors and contributors disclaim all liability for any damage, loss, or other issues arising from its use.
