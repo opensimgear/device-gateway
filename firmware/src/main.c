@@ -62,7 +62,7 @@ static bool save_registry(const osg_gateway_registry_t *registry) {
 }
 static void identity(void) {
     char uid[25]; board_uid_hex(uid);
-    append("gatewayType=stm32-can-gateway protocol=3 canProtocol=3 firmware=0.4.0 board=gateway_g0b1cb_v0_1_0 identity=%s epoch=%lu maxModules=%u\r\n",
+    append("gatewayType=stm32-can-gateway protocol=3 canProtocol=3 firmware=0.4.0 board=gateway_g0b1cb_v0_1_0 identity=%s epoch=%lu maxModules=%u panelStream=1\r\n",
         uid,(unsigned long)gateway.epoch,OSG_GW_MAX_MODULES);
 }
 static bool layout_save(void *context,const osg_gateway_registry_t *registry) { (void)context; return save_registry(registry); }
