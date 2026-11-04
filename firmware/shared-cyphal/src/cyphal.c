@@ -12,13 +12,27 @@ static void release(canard_mem_t memory,size_t size,void *pointer) {
     (void)size;
     osg_cyphal_t *t=memory.context;
     if(pointer) {
-        /* Every resource uses the same aligned fixed-block pool, including RX payload ownership. */
+        /* TX, filters and RX payloads share the general arena. */
         size_t index=((uint8_t *)pointer-(uint8_t *)t->pool)/sizeof t->pool[0];
         if(index<OSG_CYPHAL_POOL_BLOCK_COUNT && t->free_count<OSG_CYPHAL_POOL_BLOCK_COUNT)
             t->free_blocks[t->free_count++]=(uint16_t)index;
     }
 }
 static const canard_mem_vtable_t memory_vtable={.alloc=allocate,.free=release};
+static void *allocate_session(canard_mem_t memory,size_t size) {
+    osg_cyphal_t *t=memory.context;
+    if(size>OSG_CYPHAL_SESSION_SIZE || !t->session_free_count) return NULL;
+    return t->session_pool[t->free_sessions[--t->session_free_count]].bytes;
+}
+static void release_session(canard_mem_t memory,size_t size,void *pointer) {
+    (void)size;
+    osg_cyphal_t *t=memory.context;
+    if(!pointer) return;
+    size_t index=((uint8_t *)pointer-(uint8_t *)t->session_pool)/sizeof t->session_pool[0];
+    if(index<OSG_CYPHAL_SESSION_COUNT && t->session_free_count<OSG_CYPHAL_SESSION_COUNT)
+        t->free_sessions[t->session_free_count++]=(uint16_t)index;
+}
+static const canard_mem_vtable_t session_memory_vtable={.alloc=allocate_session,.free=release_session};
 static canard_us_t current_time(const canard_t *canard) {
     const osg_cyphal_t *t=canard->user_context;
     return (canard_us_t)(t->monotonic_ms*1000U);
@@ -68,24 +82,40 @@ static uint64_t seed(const osg_cyphal_t *t) {
     for(size_t i=0;i<sizeof t->identity.bytes;i++) value=(value^t->identity.bytes[i])*UINT64_C(1099511628211);
     return value^t->boot_session;
 }
+static bool subscribe_application(osg_cyphal_t *t,unsigned index) {
+    canard_subscription_t *subscription=&t->subscriptions[index];
+    uint16_t subject=(uint16_t)(OSG_CYPHAL_SUBJECT_ANNOUNCE+index);
+    /* Extent of 63 permits FD padding. The codec checks complete fields. */
+    if(canard_subscribe_13b(&t->canard,subscription,subject,63,
+                           CANARD_DEFAULT_TRANSFER_ID_TIMEOUT_us,&subscription_vtable)!=subscription)
+        return false;
+    subscription->user_context=t;
+    return true;
+}
+bool osg_cyphal_enable_panel_events(osg_cyphal_t *t) {
+    if(!t || !t->initialized) return false;
+    if(t->panel_events_enabled) return true;
+    t->panel_events_enabled=subscribe_application(t,OSG_CYPHAL_SUBJECT_PANEL_EVENT-OSG_CYPHAL_SUBJECT_ANNOUNCE);
+    return t->panel_events_enabled;
+}
 static bool start(osg_cyphal_t *t) {
     t->free_count=OSG_CYPHAL_POOL_BLOCK_COUNT;
     for(unsigned i=0;i<OSG_CYPHAL_POOL_BLOCK_COUNT;i++) t->free_blocks[i]=(uint16_t)i;
+    t->session_free_count=OSG_CYPHAL_SESSION_COUNT;
+    for(unsigned i=0;i<OSG_CYPHAL_SESSION_COUNT;i++) t->free_sessions[i]=(uint16_t)i;
     canard_mem_t memory={.vtable=&memory_vtable,.context=t};
-    canard_mem_set_t set={.tx_transfer=memory,.tx_frame=memory,.rx_session=memory,.rx_payload=memory,.rx_filters=memory};
+    canard_mem_t sessions={.vtable=&session_memory_vtable,.context=t};
+    canard_mem_set_t set={.tx_transfer=memory,.tx_frame=memory,.rx_session=sessions,.rx_payload=memory,.rx_filters=memory};
     if(!canard_new(&t->canard,&transport_vtable,set,1,OSG_CYPHAL_TX_CAPACITY,seed(t),0)) return false;
     t->canard.user_context=t;
-    for(unsigned i=0;i<7;i++) {
-        /* Extent of 63 permits FD padding. Payload adapters require the complete known fixed-size fields. */
-        if(canard_subscribe_13b(&t->canard,&t->subscriptions[i],(uint16_t)(OSG_CYPHAL_SUBJECT_ANNOUNCE+i),
-                               63,CANARD_DEFAULT_TRANSFER_ID_TIMEOUT_us,&subscription_vtable)!=&t->subscriptions[i])
-            return false;
-        t->subscriptions[i].user_context=t;
-    }
-    if(canard_subscribe_request(&t->canard,&t->subscriptions[7],OSG_CYPHAL_GET_INFO_SERVICE,0,
-                               CANARD_DEFAULT_TRANSFER_ID_TIMEOUT_us,&subscription_vtable)!=&t->subscriptions[7])
+    unsigned subjects=OSG_CYPHAL_APPLICATION_SUBJECT_COUNT;
+    if(!t->panel_events_enabled) subjects--;
+    for(unsigned i=0;i<subjects;i++) if(!subscribe_application(t,i)) return false;
+    if(canard_subscribe_request(&t->canard,&t->subscriptions[OSG_CYPHAL_GET_INFO_SUBSCRIPTION_INDEX],
+                               OSG_CYPHAL_GET_INFO_SERVICE,0,CANARD_DEFAULT_TRANSFER_ID_TIMEOUT_us,
+                               &subscription_vtable)!=&t->subscriptions[OSG_CYPHAL_GET_INFO_SUBSCRIPTION_INDEX])
         return false;
-    t->subscriptions[7].user_context=t;
+    t->subscriptions[OSG_CYPHAL_GET_INFO_SUBSCRIPTION_INDEX].user_context=t;
     t->initialized=true;
     return true;
 }
@@ -150,6 +180,7 @@ bool osg_cyphal_send(osg_cyphal_t *t,const osg_gateway_message_t *message,uint32
     size_t frames=length<mtu ? 1 : (length+2+mtu-2)/(mtu-1);
     if(t->canard.tx.queue_size+frames>OSG_CYPHAL_TX_CAPACITY) return false;
     unsigned index=subject-OSG_CYPHAL_SUBJECT_ANNOUNCE;
+    if(index>=OSG_CYPHAL_APPLICATION_SUBJECT_COUNT) return false;
     canard_bytes_chain_t payload={.bytes={.data=buffer,.size=length},.next=NULL};
     if(!canard_publish_13b(&t->canard,current_time(&t->canard)+100000,1,canard_prio_nominal,
                            subject,t->transfer_ids[index],payload,NULL)) return false;
@@ -175,8 +206,10 @@ void osg_cyphal_tick(osg_cyphal_t *t,uint32_t now_ms) {
            t->canard.tx.queue_size<OSG_CYPHAL_TX_CAPACITY) {
             canard_bytes_chain_t payload={.bytes={.data=buffer,.size=length},.next=NULL};
             if(canard_publish_13b(&t->canard,current_time(&t->canard)+1000000,1,canard_prio_nominal,
-                                 OSG_CYPHAL_HEARTBEAT_SUBJECT,t->transfer_ids[7],payload,NULL)) {
-                t->transfer_ids[7]=(uint8_t)((t->transfer_ids[7]+1)&CANARD_TRANSFER_ID_MAX);
+                                 OSG_CYPHAL_HEARTBEAT_SUBJECT,
+                                 t->transfer_ids[OSG_CYPHAL_HEARTBEAT_TRANSFER_INDEX],payload,NULL)) {
+                t->transfer_ids[OSG_CYPHAL_HEARTBEAT_TRANSFER_INDEX]=(uint8_t)(
+                    (t->transfer_ids[OSG_CYPHAL_HEARTBEAT_TRANSFER_INDEX]+1)&CANARD_TRANSFER_ID_MAX);
                 t->heartbeat_sent=true;t->last_heartbeat_ms=t->monotonic_ms;
             }
         }
@@ -185,7 +218,11 @@ void osg_cyphal_tick(osg_cyphal_t *t,uint32_t now_ms) {
 }
 void osg_cyphal_destroy(osg_cyphal_t *t) {
     if(!t || !t->initialized) return;
-    for(unsigned i=0;i<OSG_CYPHAL_SUBSCRIPTION_COUNT;i++) canard_unsubscribe(&t->canard,&t->subscriptions[i]);
+    unsigned panel_index=OSG_CYPHAL_SUBJECT_PANEL_EVENT-OSG_CYPHAL_SUBJECT_ANNOUNCE;
+    for(unsigned i=0;i<OSG_CYPHAL_SUBSCRIPTION_COUNT;i++) {
+        if(i==panel_index && !t->panel_events_enabled) continue;
+        canard_unsubscribe(&t->canard,&t->subscriptions[i]);
+    }
     canard_destroy(&t->canard);
     t->initialized=false;t->received_ready=false;t->get_info.pending=false;
 }
