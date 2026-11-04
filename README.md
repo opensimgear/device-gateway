@@ -23,6 +23,16 @@ routes, persistent descriptor order and explicit report IDs. Input acknowledgeme
 HID completion. The prior private CAN FD v1/v2 frames are incompatible and rejected.
 
 Cockpit desktop uses the correlated CDC v3 adapter with `canProtocol=3`.
+
+Send `panel-stream\n` on an open CDC connection to opt into unsolicited panel
+records. Each record is a complete JSON line between command replies. The
+first record has `panelStream: "reset"`. Event records have
+`panelStream: "event"`, the module's `moduleId`, its physical `sourceNode`, and
+a hexadecimal `payload` containing the Cyphal subject 2007 application bytes.
+Wait for a layout and a complete state before applying edges. A
+`panelStream: "loss"` record withdraws the named module's state. A reset
+withdraws all stream state and can also occur on local queue overflow or
+expiration. A new CDC connection requires a new opt-in.
 Enrollment runs in the gateway with Cockpit closed. Enabled devices remain neutral
 controllers while temporarily offline and appear ghosted in Cockpit. Disable
 removes a Windows HID collection while remembering the device and its disabled

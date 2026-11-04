@@ -1,5 +1,7 @@
 #include "opensimgear/gateway_panel.h"
+#include "opensimgear/gateway_panel_cdc.h"
 #include <assert.h>
+#include <string.h>
 
 typedef struct {
     const osg_gateway_panel_t *receiver;
@@ -26,7 +28,36 @@ static osg_gateway_message_t packet(osg_panel_kind_t kind, uint32_t sequence, ui
         .sequence=sequence,.panel_kind=kind,.panel_sampled_at_ms=sample};
 }
 
+static void cdc_test(void) {
+    osg_gateway_panel_t receiver={0};
+    osg_gateway_panel_cdc_t cdc={.receiver=&receiver,.now=10};
+    assert(osg_gateway_identity_parse("0123456789abcdef0123456789abcdef",&receiver.slots[0].identity));
+    osg_gateway_message_t state=packet(OSG_PANEL_STATE,1,10);
+    state.source_node=127;
+    size_t size;
+    osg_gateway_panel_cdc_notify(&cdc,0,&state);
+    assert(!osg_gateway_panel_cdc_peek(&cdc,&size) && size==0);
+    osg_gateway_panel_cdc_enable(&cdc,true);
+    assert(strstr(osg_gateway_panel_cdc_peek(&cdc,&size),"\"reset\""));
+    osg_gateway_panel_cdc_pop(&cdc);
+    osg_gateway_panel_cdc_notify(&cdc,0,&state);
+    const char *line=osg_gateway_panel_cdc_peek(&cdc,&size);
+    assert(line && size==strlen(line) && strstr(line,"\"sourceNode\":127,\"payload\":"));
+    assert(size<OSG_GW_PANEL_CDC_LINE && line[size-1]=='\n');
+    osg_gateway_panel_cdc_pop(&cdc);
+    osg_gateway_panel_cdc_notify(&cdc,0,NULL);
+    assert(strstr(osg_gateway_panel_cdc_peek(&cdc,&size),"\"loss\""));
+    for(unsigned i=0;i<OSG_GW_PANEL_CDC_DEPTH;i++) osg_gateway_panel_cdc_notify(&cdc,0,&state);
+    assert(cdc.count==1 && strstr(osg_gateway_panel_cdc_peek(&cdc,&size),"\"reset\""));
+    osg_gateway_panel_cdc_pop(&cdc);
+    cdc.now+=OSG_GW_PANEL_FRESHNESS_MS;
+    assert(strstr(osg_gateway_panel_cdc_peek(&cdc,&size),"\"reset\"") && !cdc.count);
+    osg_gateway_panel_cdc_enable(&cdc,false);
+    assert(!osg_gateway_panel_cdc_peek(&cdc,&size));
+}
+
 int main(void) {
+    cdc_test();
     osg_gateway_t gateway={.epoch=6};
     osg_gateway_module_t *module=&gateway.modules[3];
     *module=(osg_gateway_module_t){.occupied=true,.online=true,.node=7,.source_node=42,

@@ -4,6 +4,7 @@
 #include "opensimgear/gateway_cockpit.h"
 #include "opensimgear/gateway_config.h"
 #include "opensimgear/gateway_layout.h"
+#include "opensimgear/gateway_panel_cdc.h"
 #include "opensimgear/gateway_publication.h"
 #include "opensimgear/cyphal.h"
 #include "opensimgear/line.h"
@@ -23,6 +24,8 @@ static osg_gateway_delivery_t inflight_delivery;
 static size_t response_size,response_offset;
 static osg_gateway_layout_t layout;
 static osg_gateway_config_t configuration;
+static osg_gateway_panel_t panel;
+static osg_gateway_panel_cdc_t panel_cdc;
 
 static bool can_send(void *context,const osg_gateway_frame_t *frame) {
     (void)context;
@@ -78,6 +81,7 @@ static void cockpit_command(const char *line,uint32_t now) {
 }
 static void command(const char *line,uint32_t now) {
     if(!strncmp(line,"cockpit ",8)) cockpit_command(line,now);
+    else if(!strcmp(line,"panel-stream")) osg_gateway_panel_cdc_enable(&panel_cdc,true);
     else if(!strcmp(line,"hello") || !strcmp(line,"identity") || !strcmp(line,"info")) identity();
     else if(!strcmp(line,"help")) append("identity | inventory | registry | enable <32hex> | disable <32hex> | forget <32hex> | update-profile <32hex> | diagnostics | cockpit <id> snapshot | cockpit <id> <epoch> enable <32hex>|disable <32hex>|forget <32hex>|update-profile <32hex>|config <32hex> <boot> <child-command>|action <32hex> <boot> <child-command>|events <32hex> <boot> <child-command>\r\n");
     else if(!strcmp(line,"inventory")) {
@@ -151,9 +155,11 @@ static void initialize_gateway(void) {
     osg_gateway_identity_t unique_id;
     if(!osg_gateway_identity_parse(uid,&unique_id) ||
        !osg_gateway_publication_identity(&gateway,&unique_id) ||
-       !osg_cyphal_init(&cyphal,&unique_id,gateway.epoch,"org.opensimgear.gateway",can_send,NULL)) board_fault();
+       !osg_cyphal_init(&cyphal,&unique_id,gateway.epoch,"org.opensimgear.gateway",can_send,NULL) ||
+       !osg_cyphal_enable_panel_events(&cyphal)) board_fault();
 }
 int main(void) {
+    panel_cdc.receiver=&panel;
     board_init(); initialize_gateway();
     const tusb_rhport_init_t usb={.role=TUSB_ROLE_DEVICE,.speed=TUSB_SPEED_FULL};
     if(!tusb_init(0,&usb)) board_fault();
@@ -193,6 +199,7 @@ int main(void) {
             osg_gateway_set_running(&gateway,running);
         }
         was_can_fault=can_fault; previous_recoveries=can.recoveries;
+        panel_cdc.now=now;
         for(unsigned budget=0;budget<4;budget++) {
             board_can_frame_t incoming; if(!board_can_receive(&incoming)) break;
             osg_gateway_frame_t frame={.id=incoming.id,.length=incoming.size,.extended=true,
@@ -204,6 +211,9 @@ int main(void) {
             if(source!=osg_cyphal_node_id(&cyphal)) { migrate_can_source(now,running); break; }
             if(received && message.type==OSG_GW_CONFIG_RESPONSE) {
                 (void)osg_gateway_config_receive(&configuration,&gateway,&message);
+            } else if(received && message.type==OSG_GW_PANEL_EVENT) {
+                (void)osg_gateway_panel_receive(&panel,&gateway,&message,now,
+                    osg_gateway_panel_cdc_notify,&panel_cdc);
             } else if(received &&
                osg_gateway_receive(&gateway,&message,now,&reply)==OSG_GW_RX_ASSIGNMENT)
                 (void)osg_cyphal_send(&cyphal,&reply,now);
@@ -213,6 +223,7 @@ int main(void) {
             osg_cyphal_tick(&cyphal,now);
             if(source!=osg_cyphal_node_id(&cyphal)) migrate_can_source(now,running);
         }
+        osg_gateway_panel_tick(&panel,&gateway,now,osg_gateway_panel_cdc_notify,&panel_cdc);
         osg_gateway_config_tick(&configuration,&gateway,&cyphal,now);
         const char *config_error,*config_json;
         uint32_t config_id=configuration.route.sequence;
@@ -228,6 +239,7 @@ int main(void) {
         osg_gateway_publication_reconnect(&gateway,now,connected);
         if(connected!=serial_open) {
             serial_open=connected; osg_line_init(&line,line_buffer,sizeof line_buffer);
+            osg_gateway_panel_cdc_enable(&panel_cdc,false);
             response_size=response_offset=0;
             if(!connected) {
                 osg_gateway_config_cancel(&configuration);
@@ -248,6 +260,16 @@ int main(void) {
             osg_line_result_t result=osg_line_feed(&line,byte);
             if(result==OSG_LINE_READY) command(line_buffer,now);
             else if(result==OSG_LINE_TOO_LONG) append("ERR line too long\r\n");
+        }
+        /* Insert only whole event lines between command replies on this CDC owner. */
+        if(connected && !response_size) {
+            size_t size;
+            const char *event=osg_gateway_panel_cdc_peek(&panel_cdc,&size);
+            if(event && tud_cdc_write_available()>=size) {
+                if(tud_cdc_write(event,(uint32_t)size)!=size) board_fault();
+                osg_gateway_panel_cdc_pop(&panel_cdc);
+                tud_cdc_write_flush();
+            }
         }
         hid_task(now);
         board_led(can_fault ? ((now/100U)&1U)!=0 : (active ? ((now/500U)&1U)!=0 : ((now/1000U)&1U)!=0));
