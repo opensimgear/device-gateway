@@ -10,10 +10,12 @@
 static osg_debug_gateway_t gateway;
 static char response[OSG_DEBUG_RESPONSE_CAPACITY],line[OSG_DEBUG_LINE_CAPACITY];
 static uint32_t milliseconds(void) { struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint32_t)((uint64_t)t.tv_sec*1000+t.tv_nsec/1000000); }
+static int write_bytes(const char *bytes,size_t length) {
+    return length==0 || (fwrite(bytes,1,length,stdout)==length && fflush(stdout)==0);
+}
 int main(void) {
     uint32_t started=milliseconds();size_t used=0;bool overflow=false;
     if(!osg_debug_init(&gateway,"000000000123456789abcdef","OSG-PICO-0123456789abcdef",NULL)) return 1;
-    osg_debug_connected(&gateway,true);
     for(;;) {
         uint32_t now=milliseconds()-started;
         osg_gateway_layout_event_t event=osg_debug_tick(&gateway,now,true);
@@ -22,6 +24,12 @@ int main(void) {
             uint8_t report[64];osg_gateway_delivery_t delivery;
             size_t n=osg_debug_report_prepare(&gateway,i,report,sizeof report,&delivery);
             if(n) osg_debug_report_complete(&gateway,&delivery,report,n);
+        }
+        char publication[OSG_GW_PUBLICATION_STREAM_LINE];
+        size_t publication_size=osg_gateway_publication_stream_peek(&gateway.inventory,publication);
+        if(publication_size && gateway.connected) {
+            if(!write_bytes(publication,publication_size)) return 5;
+            osg_gateway_publication_stream_pop(&gateway.inventory);
         }
         struct pollfd input={.fd=STDIN_FILENO,.events=POLLIN};
         if(poll(&input,1,1)<0) return 3;
@@ -32,10 +40,13 @@ int main(void) {
                 if(bytes[i]=='\n') {
                     line[used]=0;
                     if(overflow) strcpy(line,"invalid");
+                    size_t response_size;
                     if(!strcmp(line,"transport 0") || !strcmp(line,"transport 1")) {
-                        osg_debug_connected(&gateway,line[10]=='1');strcpy(response,"{\"transport\":true}\n");
-                    } else if(!osg_debug_command(&gateway,line,response,sizeof response)) return 4;
-                    fputs(response,stdout);fflush(stdout);used=0;overflow=false;
+                        osg_debug_connected(&gateway,line[10]=='1');
+                        strcpy(response,"{\"transport\":true}\n");response_size=strlen(response);
+                    } else response_size=osg_debug_command(&gateway,line,response,sizeof response);
+                    if(!write_bytes(response,response_size)) return 5;
+                    used=0;overflow=false;
                 } else if(bytes[i]!='\r' && !overflow) {
                     if(used+1==sizeof line) overflow=true;else line[used++]=bytes[i];
                 }

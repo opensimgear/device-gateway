@@ -62,11 +62,21 @@ int main(void) {
     assert(strstr(output,"\"debugInventoryStream\":1"));
     char inventory[OSG_GW_PUBLICATION_STREAM_LINE];
     assert(!osg_gateway_publication_stream_peek(&gateway.inventory,inventory));
+    uint32_t watchdog_deadline=gateway.last_command;
+    assert(osg_debug_command(&gateway,"debug-watchdog 41 65536",output,sizeof output));
+    assert(!strcmp(output,"{\"id\":41,\"ok\":false}\r\n") && gateway.last_command==watchdog_deadline);
     assert(!osg_debug_command(&gateway,"panel-stream",output,sizeof output));
     advance(1);
     assert(osg_gateway_publication_stream_peek(&gateway.inventory,inventory));
     assert(!strcmp(inventory,"{\"publicationStream\":\"change\",\"epoch\":65536,\"sequence\":\"1\"}\r\n"));
     osg_gateway_publication_stream_pop(&gateway.inventory);
+    assert(osg_debug_command(&gateway,"debug-watchdog 42 65536",output,sizeof output));
+    assert(!strcmp(output,"{\"id\":42,\"ok\":true}\r\n") && gateway.last_command==clock_ms);
+    watchdog_deadline=gateway.last_command;
+    assert(osg_debug_command(&gateway,"debug-watchdog 43 65535",output,sizeof output));
+    assert(!strcmp(output,"{\"id\":43,\"ok\":false}\r\n") && gateway.last_command==watchdog_deadline);
+    assert(osg_debug_command(&gateway,"debug-watchdog 44 65536 trailing",output,sizeof output));
+    assert(!strcmp(output,"{\"id\":44,\"ok\":false}\r\n") && gateway.last_command==watchdog_deadline);
     advance(50);
     assert(!osg_gateway_publication_stream_peek(&gateway.inventory,inventory));
     debug(1,"axis",0,2000,2);advance(1);
@@ -176,7 +186,15 @@ int main(void) {
     assert(osg_gateway_publication_stream_peek(&gateway.inventory,inventory));
     assert(strstr(inventory,"\"sequence\":\"1\""));
     debug(0,"contact",0,1,2);advance(OSG_DEBUG_WATCHDOG_MS+1);assert(!gateway.connected && !gateway.core.running && !gateway.devices[0].sample.digital_closed);
+    assert(osg_debug_command(&gateway,"debug-watchdog 45 65536",output,sizeof output));
+    assert(!strcmp(output,"{\"id\":45,\"ok\":false}\r\n") && !gateway.connected);
     assert(!osg_gateway_publication_stream_peek(&gateway.inventory,inventory));
+    osg_debug_connected(&gateway,true);
+    assert(osg_debug_command(&gateway,"debug-watchdog 46 65536",output,sizeof output));
+    assert(!strcmp(output,"{\"id\":46,\"ok\":false}\r\n"));
+    assert(!osg_debug_command(&gateway,"panel-stream",output,sizeof output));
+    assert(osg_debug_command(&gateway,"debug-watchdog 47 65536",output,sizeof output));
+    assert(!strcmp(output,"{\"id\":47,\"ok\":true}\r\n"));
     /* Fail closed when retained gateway storage is corrupt, including metadata. */
     memset(flash[0],0,sizeof flash[0]);assert(!osg_debug_init(&restored,gateway.uid,gateway.serial,journals));
     puts("Pico debug core: acquisition, lifecycle, DCS actions/events, flash and failure tests passed");

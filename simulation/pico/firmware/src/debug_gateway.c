@@ -132,6 +132,19 @@ static bool token_u32(const char **cursor,uint32_t *out) {
     if(!digits || (*p && *p!=' ')) return false;
     *out=value;*cursor=*p?p+1:p;return true;
 }
+static size_t watchdog_response(uint32_t id,bool ok,char *out,size_t capacity) {
+    int n=snprintf(out,capacity,"{\"id\":%lu,\"ok\":%s}\r\n",(unsigned long)id,ok?"true":"false");
+    return n>0 && (size_t)n<capacity?(size_t)n:0;
+}
+static size_t debug_watchdog(osg_debug_gateway_t *g,const char *line,char *out,size_t capacity) {
+    const char *p=line+15;uint32_t id=0,epoch=0;
+    if(!token_u32(&p,&id)) return 0;
+    bool valid=token_u32(&p,&epoch) && !*p;
+    bool renew=valid && epoch==g->core.epoch && g->connected &&
+        g->inventory.enabled && !g->inventory.lost;
+    if(renew) g->last_command=g->now;
+    return watchdog_response(id,renew,out,capacity);
+}
 static const char *debug_command(osg_debug_gateway_t *g,const char *line,osg_gateway_cockpit_request_t *r) {
     const char *p=line+6;
     if(!token_u32(&p,&r->id) || !r->id || !token_u32(&p,&r->epoch)) return "invalid_request";
@@ -188,6 +201,7 @@ static const char *debug_command(osg_debug_gateway_t *g,const char *line,osg_gat
 }
 size_t osg_debug_command(osg_debug_gateway_t *g,const char *line,char *out,size_t capacity) {
     if(!g || !line || !out || !capacity || strlen(line)>=OSG_DEBUG_LINE_CAPACITY) return 0;
+    if(!strncmp(line,"debug-watchdog ",15)) return debug_watchdog(g,line,out,capacity);
     g->last_command=g->now;
     if(!strcmp(line,"panel-stream")) {
         if(g->connected && !g->layout.detached) osg_gateway_publication_stream_enable(&g->inventory,true);
