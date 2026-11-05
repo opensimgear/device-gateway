@@ -378,7 +378,46 @@ static void stream_test(void) {
     osg_gateway_publication_stream_observe(&stream,&g);
     stream_line(&stream,"{\"publicationStream\":\"change\",\"epoch\":65537,\"sequence\":\"1\"}\r\n");
 }
+static void admission_stream_test(void) {
+    osg_gateway_t g;flash_t flash;fixture(&g,&flash,1);
+    osg_gateway_publication_stream_t stream={0};
+    char line[OSG_GW_PUBLICATION_STREAM_LINE];
+    osg_gateway_publication_stream_enable(&stream,true);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    stream_line(&stream,"{\"publicationStream\":\"change\",\"epoch\":65536,\"sequence\":\"1\"}\r\n");
+
+    g.lease_counter=65535;
+    osg_gateway_message_t incoming=announce(2),reply;
+    assert(osg_gateway_receive(&g,&incoming,1,&reply)==OSG_GW_RX_FULL);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    stream_line(&stream,"{\"publicationStream\":\"inventory\",\"epoch\":65536,\"sequence\":\"2\"}\r\n");
+
+    assert(osg_gateway_receive(&g,&incoming,2,&reply)==OSG_GW_RX_FULL);
+    assert(g.rejected_announcements==2);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    assert(!osg_gateway_publication_stream_peek(&stream,line));
+
+    incoming=announce(3);
+    assert(osg_gateway_receive(&g,&incoming,3,&reply)==OSG_GW_RX_FULL);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    stream_line(&stream,"{\"publicationStream\":\"inventory\",\"epoch\":65536,\"sequence\":\"3\"}\r\n");
+
+    g.admission_error="capacity_exceeded";
+    osg_gateway_publication_stream_observe(&stream,&g);
+    stream_line(&stream,"{\"publicationStream\":\"inventory\",\"epoch\":65536,\"sequence\":\"4\"}\r\n");
+
+    g.admission_error=NULL;
+    memset(&g.rejected_identity,0,sizeof g.rejected_identity);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    stream_line(&stream,"{\"publicationStream\":\"inventory\",\"epoch\":65536,\"sequence\":\"5\"}\r\n");
+
+    assert(osg_gateway_receive(&g,&incoming,4,&reply)==OSG_GW_RX_FULL);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    osg_gateway_set_running(&g,false);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    stream_line(&stream,"{\"publicationStream\":\"change\",\"epoch\":65536,\"sequence\":\"6\"}\r\n");
+}
 int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--publication-vectors")) {vectors();return 0;}
-    restore_test();disabled_and_arrival_test();expiry_and_fence_test();reconnect_and_loss_test();wire_test();delivery_revocation_test();attention_preservation_test();lost_confirmation_test();bounds_test();automatic_profile_writer_test();wrapped_clock_test();cancelled_saved_arrival_test();inspect_racing_owner_test();configured_writer_preservation_test();stream_test();puts("gateway volatile publication: all tests passed");return 0;
+    restore_test();disabled_and_arrival_test();expiry_and_fence_test();reconnect_and_loss_test();wire_test();delivery_revocation_test();attention_preservation_test();lost_confirmation_test();bounds_test();automatic_profile_writer_test();wrapped_clock_test();cancelled_saved_arrival_test();inspect_racing_owner_test();configured_writer_preservation_test();stream_test();admission_stream_test();puts("gateway volatile publication: all tests passed");return 0;
 }

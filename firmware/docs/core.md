@@ -107,6 +107,10 @@ stay quiet. The CDC owner coalesces pending changes, completes partial lines
 before switching records, and retires the stream on each DTR close edge. Private
 owner evidence remains in correlated command replies.
 
+Admission warning changes use an `inventory` record on the same sequence.
+The record preserves existing publication evidence. Repeated identical
+rejections remain quiet and the cumulative count is sampled in snapshot replies.
+
 ## HID collections and reports
 
 One HID interface has a joystick top-level collection per enabled identity, in

@@ -180,3 +180,8 @@ The STM32G0B1CB image builds using Arm GNU 14.3.1 and cached dependencies.
 Flash usage is 70,420 bytes of 124 KiB and RAM usage is 119,312 bytes of 128 KiB.
 The compile-only image uses `0xFFFF:0xFFFF`. Physical CDC, CAN and HID acceptance
 remain in Cockpit issue #199.
+
+Admission warning notifications also pass all four sanitizer and coverage suites,
+six native CMake tests and eight POSIX simulator tests. The publication owner
+covers 230/238 lines (96.64%). The updated compile-only STM32G0B1CB image uses
+70,532 bytes of flash and 119,336 bytes of RAM.

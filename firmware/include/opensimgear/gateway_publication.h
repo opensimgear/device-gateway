@@ -27,8 +27,9 @@ const char *osg_gateway_publication_decimal(uint64_t,char out[OSG_GW_PUBLICATION
 enum { OSG_GW_PUBLICATION_STREAM_LINE=96, OSG_GW_PUBLICATION_STREAM_FIELDS=17 };
 typedef struct {
     uint64_t observed[OSG_GW_PUBLICATION_STREAM_FIELDS],sequence;
-    const char *layout_error;
-    bool enabled,pending,lost;
+    const char *layout_error,*admission_error;
+    osg_gateway_identity_t rejected_identity;
+    bool enabled,pending,inventory_pending,lost;
 } osg_gateway_publication_stream_t;
 
 /* Connection-local and opt-in. Observe while the writer is blocked so a

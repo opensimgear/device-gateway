@@ -280,9 +280,16 @@ void osg_gateway_publication_stream_observe(osg_gateway_publication_stream_t *s,
         s->layout_error=g->layout_error;
         s->pending=true;
     }
+    if((s->admission_error!=g->admission_error &&
+        (!s->admission_error || !g->admission_error || strcmp(s->admission_error,g->admission_error))) ||
+       !osg_gateway_identity_equal(&s->rejected_identity,&g->rejected_identity)) {
+        s->admission_error=g->admission_error;
+        s->rejected_identity=g->rejected_identity;
+        s->inventory_pending=true;
+    }
 }
 size_t osg_gateway_publication_stream_peek(const osg_gateway_publication_stream_t *s,char out[OSG_GW_PUBLICATION_STREAM_LINE]) {
-    if(!s->pending) return 0;
+    if(!s->pending && !s->inventory_pending) return 0;
     if(s->sequence==UINT64_MAX) {
         static const char loss[]="{\"publicationStream\":\"loss\"}\r\n";
         memcpy(out,loss,sizeof loss);
@@ -290,12 +297,13 @@ size_t osg_gateway_publication_stream_peek(const osg_gateway_publication_stream_
     }
     char sequence[OSG_GW_PUBLICATION_DECIMAL_CAPACITY];
     int size=snprintf(out,OSG_GW_PUBLICATION_STREAM_LINE,
-        "{\"publicationStream\":\"change\",\"epoch\":%lu,\"sequence\":\"%s\"}\r\n",
-        (unsigned long)s->observed[0],osg_gateway_publication_decimal(s->sequence+1,sequence));
+        "{\"publicationStream\":\"%s\",\"epoch\":%lu,\"sequence\":\"%s\"}\r\n",
+        s->pending?"change":"inventory",(unsigned long)s->observed[0],
+        osg_gateway_publication_decimal(s->sequence+1,sequence));
     return size>0 && size<OSG_GW_PUBLICATION_STREAM_LINE?(size_t)size:0;
 }
 void osg_gateway_publication_stream_pop(osg_gateway_publication_stream_t *s) {
-    s->pending=false;
+    s->pending=s->inventory_pending=false;
     if(s->sequence==UINT64_MAX) s->lost=true;
     else s->sequence++;
 }
