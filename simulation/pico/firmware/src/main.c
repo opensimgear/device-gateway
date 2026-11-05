@@ -12,7 +12,7 @@
 static osg_debug_gateway_t gateway;
 static char input[OSG_DEBUG_LINE_CAPACITY],output[OSG_DEBUG_RESPONSE_CAPACITY];
 static size_t input_used,output_used,output_sent;
-static bool dropping_line,response_complete,hid_inflight;
+static bool dropping_line,response_complete,hid_inflight,inventory_output;
 static osg_gateway_delivery_t inflight_delivery;
 static uint8_t sent[OSG_GW_MAX_MODULES][OSG_GW_MAX_REPORT_SIZE+1];
 static bool sent_valid[OSG_GW_MAX_MODULES];
@@ -60,6 +60,7 @@ static void initialize(void) {
 }
 static void serial_task(void) {
     if(!tud_cdc_connected()) return;
+    bool prefer_command=inventory_output;
     if(output_used) {
         if(output_sent<output_used) {
             output_sent+=tud_cdc_write(output+output_sent,(uint32_t)(output_used-output_sent));
@@ -67,8 +68,18 @@ static void serial_task(void) {
         }
         if(output_sent!=output_used || !response_complete) return;
         output_used=output_sent=0;response_complete=false;
+        inventory_output=false;
     }
     if(gateway.layout.detached) return;
+    // Let a command finish parsing after an event, even across USB packets.
+    if(!prefer_command && !input_used && !dropping_line) {
+        output_used=osg_gateway_publication_stream_peek(&gateway.inventory,output);
+        if(output_used) {
+            osg_gateway_publication_stream_pop(&gateway.inventory);
+            inventory_output=true;
+            return;
+        }
+    }
     for(unsigned budget=0;budget<64 && tud_cdc_available();budget++) {
         uint8_t c;if(tud_cdc_read(&c,1)!=1) break;
         if(!c) { input_used=0;dropping_line=true;continue; }
@@ -114,7 +125,7 @@ int main(void) {
         bool connected=tud_mounted() && !tud_suspended() && tud_cdc_connected();
         if(connected!=gateway.connected) {
             osg_debug_connected(&gateway,connected);invalidate_reports();
-            if(!connected) { input_used=output_used=output_sent=0;dropping_line=false;response_complete=false;tud_cdc_read_flush(); }
+            if(!connected) { input_used=output_used=output_sent=0;dropping_line=false;response_complete=false;inventory_output=false;tud_cdc_read_flush(); }
         }
         osg_gateway_layout_event_t event=osg_debug_tick(&gateway,now,output_used==0);
         if(event==OSG_GATEWAY_LAYOUT_DETACH) {
@@ -136,7 +147,7 @@ void tud_cdc_line_state_cb(uint8_t itf,bool dtr,bool rts) {
     (void)itf;(void)rts;
     if(!dtr) {
         osg_debug_connected(&gateway,false);invalidate_reports();
-        input_used=output_used=output_sent=0;dropping_line=false;response_complete=false;
+        input_used=output_used=output_sent=0;dropping_line=false;response_complete=false;inventory_output=false;
     }
 }
 void tud_mount_cb(void) { invalidate_reports(); }

@@ -59,6 +59,25 @@ int main(void) {
     assert(strstr(request("hello"),"pico-debug-gateway protocol=3"));
     assert(strstr(request("identity"),"OSG-PICO-0123456789abcdef"));assert(strstr(request("info"),"maxVirtual=8"));
     assert(strstr(request("cockpit 1 snapshot"),"\"firmware\":\"0.1.0\""));
+    assert(strstr(output,"\"debugInventoryStream\":1"));
+    char inventory[OSG_GW_PUBLICATION_STREAM_LINE];
+    assert(!osg_gateway_publication_stream_peek(&gateway.inventory,inventory));
+    assert(!osg_debug_command(&gateway,"panel-stream",output,sizeof output));
+    advance(1);
+    assert(osg_gateway_publication_stream_peek(&gateway.inventory,inventory));
+    assert(!strcmp(inventory,"{\"publicationStream\":\"change\",\"epoch\":65536,\"sequence\":\"1\"}\r\n"));
+    osg_gateway_publication_stream_pop(&gateway.inventory);
+    advance(50);
+    assert(!osg_gateway_publication_stream_peek(&gateway.inventory,inventory));
+    debug(1,"axis",0,2000,2);advance(1);
+    assert(osg_gateway_publication_stream_peek(&gateway.inventory,inventory));
+    assert(!strcmp(inventory,"{\"publicationStream\":\"inventory\",\"epoch\":65536,\"sequence\":\"2\"}\r\n"));
+    osg_gateway_publication_stream_pop(&gateway.inventory);
+    debug(1,"axis",0,2000,2);advance(20);
+    assert(!osg_gateway_publication_stream_peek(&gateway.inventory,inventory));
+    debug(1,"axis",0,0,2);advance(1);
+    assert(osg_gateway_publication_stream_peek(&gateway.inventory,inventory));
+    osg_gateway_publication_stream_pop(&gateway.inventory);
     assert(!osg_debug_command(&gateway,"hello",output,2));
     rejects("nonsense","invalid_request");rejects("debug 1 9 - 0 describe","stale_epoch");
     rejects("debug 1 65536 - 0 add invalid","invalid_preset");rejects("debug 1 65536 - 0 describe extra","invalid_request");
@@ -75,7 +94,13 @@ int main(void) {
     debug(6,"expansion",7,1,2);debug(6,"neutral",0,0,0);advance(30);
     /* Detent signs remain ordered even while multiple UI commands queue. */
     uint32_t head=gateway.devices[5].events.head;
-    debug(5,"turn",0,2,2);debug(5,"turn",0,-1,2);advance(220);
+    if(osg_gateway_publication_stream_peek(&gateway.inventory,inventory)) osg_gateway_publication_stream_pop(&gateway.inventory);
+    debug(5,"turn",0,2,2);debug(5,"turn",0,-1,2);
+    assert(!osg_gateway_publication_stream_peek(&gateway.inventory,inventory));
+    advance(4);
+    assert(osg_gateway_publication_stream_peek(&gateway.inventory,inventory));
+    assert(strstr(inventory,"\"publicationStream\":\"inventory\""));
+    advance(216);
     assert(gateway.devices[5].events.head>=head+6);assert(!gateway.devices[5].turn_count[0]);
     assert(!osg_encoder_output(&gateway.devices[5].acquisition.encoders[0],clock_ms));
     assert(!gateway.devices[5].acquisition.encoders[0].count && !(gateway.devices[5].report[0]&0x18));
@@ -145,7 +170,13 @@ int main(void) {
     assert(gateway.devices[0].actions.rgb==0xffffff);
     debug(0,"contact",0,1,2);advance(30);osg_debug_connected(&gateway,false);
     assert(!gateway.devices[0].actions.rgb && !gateway.devices[0].actions.registry.leases[0].owned);assert(!gateway.core.running && !gateway.devices[0].sample.digital_closed);
-    osg_debug_connected(&gateway,true);debug(0,"contact",0,1,2);advance(OSG_DEBUG_WATCHDOG_MS+1);assert(!gateway.connected && !gateway.core.running && !gateway.devices[0].sample.digital_closed);
+    osg_debug_connected(&gateway,true);
+    assert(!osg_debug_command(&gateway,"panel-stream",output,sizeof output));
+    advance(1);
+    assert(osg_gateway_publication_stream_peek(&gateway.inventory,inventory));
+    assert(strstr(inventory,"\"sequence\":\"1\""));
+    debug(0,"contact",0,1,2);advance(OSG_DEBUG_WATCHDOG_MS+1);assert(!gateway.connected && !gateway.core.running && !gateway.devices[0].sample.digital_closed);
+    assert(!osg_gateway_publication_stream_peek(&gateway.inventory,inventory));
     /* Fail closed when retained gateway storage is corrupt, including metadata. */
     memset(flash[0],0,sizeof flash[0]);assert(!osg_debug_init(&restored,gateway.uid,gateway.serial,journals));
     puts("Pico debug core: acquisition, lifecycle, DCS actions/events, flash and failure tests passed");

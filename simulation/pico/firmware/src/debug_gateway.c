@@ -47,6 +47,7 @@ bool osg_debug_init(osg_debug_gateway_t *g,const char uid[25],const char *serial
 void osg_debug_connected(osg_debug_gateway_t *g,bool connected) {
     if(g->connected==connected) return;
     g->connected=connected;g->watchdog=connected;g->last_command=g->now;
+    if(!connected) osg_gateway_publication_stream_enable(&g->inventory,false);
     for(unsigned i=0;i<OSG_DEBUG_DEVICE_COUNT;i++) if(g->devices[i].occupied) {
         (void)osg_virtual_debug(&g->devices[i],"neutral",0,0,g->now);
         osg_virtual_rearm(&g->devices[i],g->now,true);
@@ -57,13 +58,28 @@ void osg_debug_connected(osg_debug_gateway_t *g,bool connected) {
     }
     osg_gateway_set_running(&g->core,connected && !g->layout.detached);
 }
+static bool sample_changed(const osg_profile_sample_t *before,const osg_profile_sample_t *after) {
+    return before->digital_closed!=after->digital_closed || before->expansion_available!=after->expansion_available ||
+        memcmp(before->axes,after->axes,sizeof before->axes) ||
+        memcmp(before->expansion_closed,after->expansion_closed,sizeof before->expansion_closed);
+}
 osg_gateway_layout_event_t osg_debug_tick(osg_debug_gateway_t *g,uint32_t now,bool drained) {
     g->now=now;
     if(g->watchdog && (uint32_t)(now-g->last_command)>=OSG_DEBUG_WATCHDOG_MS) osg_debug_connected(g,false);
-    for(unsigned i=0;i<OSG_DEBUG_DEVICE_COUNT;i++) osg_virtual_tick(&g->devices[i],&g->core,now);
+    for(unsigned i=0;i<OSG_DEBUG_DEVICE_COUNT;i++) {
+        osg_virtual_device_t *d=&g->devices[i];
+        uint32_t contacts=d->sample.digital_closed;
+        uint16_t expansion[OSG_EXPANDERS];
+        memcpy(expansion,d->sample.expansion_closed,sizeof expansion);
+        osg_virtual_tick(d,&g->core,now);
+        if(g->inventory.enabled && !g->inventory.lost && (contacts!=d->sample.digital_closed ||
+           memcmp(expansion,d->sample.expansion_closed,sizeof expansion)))
+            g->inventory.inventory_pending=true;
+    }
     osg_gateway_tick(&g->core,now);
     osg_gateway_layout_event_t event=osg_gateway_layout_service(&g->layout,&g->core,now,drained,persist,g);
     if(event==OSG_GATEWAY_LAYOUT_ATTACH) osg_gateway_set_running(&g->core,g->connected);
+    osg_gateway_publication_stream_observe(&g->inventory,&g->core);
     return event;
 }
 bool osg_debug_layout_activate(osg_debug_gateway_t *g) {
@@ -101,7 +117,7 @@ static size_t response(osg_debug_gateway_t *g,const osg_gateway_cockpit_request_
         osg_gateway_cockpit_config_response(&g->core,g->uid,r->id,error,target,out,capacity);
     if(!n) return 0;
     const char *old="\"gatewayType\":\"stm32-can-gateway\"";char *where=strstr(out,old);char replacement[160];
-    int length=snprintf(replacement,sizeof replacement,"\"gatewayType\":\"pico-debug-gateway\",\"serial\":\"%s\",\"debug\":1,\"maxVirtual\":8",g->serial);
+    int length=snprintf(replacement,sizeof replacement,"\"gatewayType\":\"pico-debug-gateway\",\"serial\":\"%s\",\"debug\":1,\"maxVirtual\":8,\"debugInventoryStream\":1",g->serial);
     if(!where || length<0 || (size_t)length>=sizeof replacement || n+(size_t)length-strlen(old)>=capacity) return 0;
     size_t offset=(size_t)(where-out),old_length=strlen(old);
     memmove(where+length,where+old_length,n-offset-old_length+1);memcpy(where,replacement,(size_t)length);n+=(size_t)length-old_length;
@@ -141,7 +157,9 @@ static const char *debug_command(osg_debug_gateway_t *g,const char *line,osg_gat
         if(settings->read && !osg_journal_erased(settings) &&
            (!settings->erase(settings->context,0) || !settings->erase(settings->context,1))) return "flash_save_failed";
         if(!osg_virtual_init(&g->devices[slot],slot,preset,g->core.epoch+slot+1,g->now,g->journals[slot+1].read?&g->journals[slot+1]:NULL)) return "flash_save_failed";
-        if(!persist(g,&g->core.pending)) { g->devices[slot].occupied=false;return "flash_save_failed"; }return NULL;
+        if(!persist(g,&g->core.pending)) { g->devices[slot].occupied=false;return "flash_save_failed"; }
+        if(g->inventory.enabled && !g->inventory.lost) g->inventory.inventory_pending=true;
+        return NULL;
     }
     if(!osg_gateway_identity_parse(identity,&r->identity)) return "invalid_request";
     osg_virtual_device_t *d=device(g,&r->identity);if(!d) return "unknown_module";
@@ -155,7 +173,13 @@ static const char *debug_command(osg_debug_gateway_t *g,const char *line,osg_gat
         values[i]=negative?-(int)value:(int)value;
     }
     if(*p) return "invalid_request";
+    osg_profile_sample_t before=d->sample;
+    bool online=d->online,direct=d->direct;
+    uint32_t boot=d->boot;
     const char *error=osg_virtual_debug(d,op,values[0],values[1],g->now);
+    if(!error && g->inventory.enabled && !g->inventory.lost &&
+       (online!=d->online || direct!=d->direct || boot!=d->boot || sample_changed(&before,&d->sample)))
+        g->inventory.inventory_pending=true;
     if(!error && !d->online) {
         int index=osg_gateway_find_module(&g->core,&d->identity);
         if(index>=0) { g->core.modules[index].last_seen=g->now-OSG_GW_OFFLINE_TIMEOUT_MS;osg_gateway_tick(&g->core,g->now); }
@@ -165,6 +189,10 @@ static const char *debug_command(osg_debug_gateway_t *g,const char *line,osg_gat
 size_t osg_debug_command(osg_debug_gateway_t *g,const char *line,char *out,size_t capacity) {
     if(!g || !line || !out || !capacity || strlen(line)>=OSG_DEBUG_LINE_CAPACITY) return 0;
     g->last_command=g->now;
+    if(!strcmp(line,"panel-stream")) {
+        if(g->connected && !g->layout.detached) osg_gateway_publication_stream_enable(&g->inventory,true);
+        return 0;
+    }
     if(!strcmp(line,"hello") || !strcmp(line,"identity") || !strcmp(line,"info")) {
         int n=snprintf(out,capacity,"gatewayType=pico-debug-gateway protocol=3 canProtocol=3 firmware=0.1.0 board=pico_w identity=%s serial=%s epoch=%lu maxModules=32 debug=1 maxVirtual=8\r\n",g->uid,g->serial,(unsigned long)g->core.epoch);
         return n>0 && (size_t)n<capacity?(size_t)n:0;
@@ -181,7 +209,10 @@ size_t osg_debug_command(osg_debug_gateway_t *g,const char *line,char *out,size_
         else {
             char command[OSG_GW_CONFIG_COMMAND_CAPACITY];int n=snprintf(command,sizeof command,"%s%s",request.action==OSG_GW_COCKPIT_ACTION?"action ":request.action==OSG_GW_COCKPIT_EVENTS?"events ":"",request.command);
             if(n<0 || (size_t)n>=sizeof command) error="invalid_request";
-            else { error=osg_virtual_command(d,command,g->now,g->child,sizeof g->child);target=g->child;
+            else { uint32_t generation=d->runtime.generation;
+                error=osg_virtual_command(d,command,g->now,g->child,sizeof g->child);target=g->child;
+                if(g->inventory.enabled && !g->inventory.lost && generation!=d->runtime.generation)
+                    g->inventory.inventory_pending=true;
                 /* The normal adapter reconciles settings through the renewed lease. */
                 osg_virtual_tick(d,&g->core,g->now);
             }

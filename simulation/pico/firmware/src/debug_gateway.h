@@ -2,6 +2,7 @@
 #include "virtual_device.h"
 #include "opensimgear/gateway_layout.h"
 #include "opensimgear/gateway_cockpit.h"
+#include "opensimgear/gateway_publication.h"
 
 enum { OSG_DEBUG_LINE_CAPACITY=1024, OSG_DEBUG_RESPONSE_CAPACITY=32768, OSG_DEBUG_WATCHDOG_MS=10000 };
 typedef struct {
@@ -12,6 +13,7 @@ typedef struct {
     char uid[25],serial[40];
     uint32_t now,last_command;
     bool connected,watchdog;
+    osg_gateway_publication_stream_t inventory;
     char child[OSG_GW_CONFIG_RESPONSE_CAPACITY];
 } osg_debug_gateway_t;
 /* journals may be NULL for volatile host tests. Platform uses nine independent
