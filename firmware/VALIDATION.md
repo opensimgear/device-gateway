@@ -168,3 +168,15 @@ board queue; expiry cancels pending hardware transmission with a separate bounde
 abort timer. Node-ID migration flushes software and controller queues and revokes
 leases before fresh input resumes. These HAL paths cross-compile successfully;
 actual cancellation, collision recovery and bus-off timing remain bench tests.
+# CAN publication notification verification, 2026-11-05
+
+The four portable suites pass under AddressSanitizer and UndefinedBehaviorSanitizer
+and in the GCC coverage build. The publication owner covers 223/231 lines
+(96.54%). All six configured coverage gates pass. Six Windows native CMake
+tests and eight POSIX simulator tests pass. The simulator flash test artifacts
+use a Linux temporary directory so its private lock permissions are enforceable.
+
+The STM32G0B1CB image builds using Arm GNU 14.3.1 and cached dependencies.
+Flash usage is 70,420 bytes of 124 KiB and RAM usage is 119,312 bytes of 128 KiB.
+The compile-only image uses `0xFFFF:0xFFFF`. Physical CDC, CAN and HID acceptance
+remain in Cockpit issue #199.

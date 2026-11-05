@@ -100,6 +100,13 @@ sanitizer/coverage runner. The portable helper copy is pinned in
 `shared-publication/README.md`; the Pico debug role does not advertise this CAN
 gateway capability.
 
+The `panel-stream` opt-in also sends one sequenced publication baseline and
+notifications on committed ownership and delivery changes. First valid input
+and input expiry affect delivery. Ordinary reports and unchanged heartbeats
+stay quiet. The CDC owner coalesces pending changes, completes partial lines
+before switching records, and retires the stream on each DTR close edge. Private
+owner evidence remains in correlated command replies.
+
 ## HID collections and reports
 
 One HID interface has a joystick top-level collection per enabled identity, in

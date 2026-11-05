@@ -1,4 +1,5 @@
 #include "opensimgear/gateway_publication.h"
+#include <stdio.h>
 #include <string.h>
 
 static uint32_t bit(unsigned i) { return UINT32_C(1)<<i; }
@@ -238,4 +239,63 @@ void osg_gateway_publication_applied(osg_gateway_t *g,const osg_publication_tick
         }
         p->dirty=false;
     }
+}
+
+const char *osg_gateway_publication_decimal(uint64_t value,char out[OSG_GW_PUBLICATION_DECIMAL_CAPACITY]) {
+    char *digits=out+OSG_GW_PUBLICATION_DECIMAL_CAPACITY-1;
+    *digits='\0';
+    do {
+        *--digits=(char)('0'+value%10U);
+        value/=10U;
+    } while(value);
+    return digits;
+}
+
+void osg_gateway_publication_stream_enable(osg_gateway_publication_stream_t *s,bool enabled) {
+    if(s->enabled==enabled) return;
+    *s=(osg_gateway_publication_stream_t){.enabled=enabled,.pending=enabled};
+}
+void osg_gateway_publication_stream_observe(osg_gateway_publication_stream_t *s,const osg_gateway_t *g) {
+    if(!s->enabled || s->lost) return;
+    const osg_gateway_publication_t *p=&g->publication;
+    /* The revision covers module assignment, boot/profile and USB route
+     * changes. Layout, route and lease fences can also change independently.
+     * A module's first input and freshness timeout affect settlement. Report
+     * contents, input timestamps and renewal deadlines do not. */
+    uint32_t input_ready=0;
+    for(unsigned i=0;i<OSG_GW_MAX_MODULES;i++) {
+        if(g->modules[i].has_input) input_ready|=bit(i);
+    }
+    uint64_t current[OSG_GW_PUBLICATION_STREAM_FIELDS]={
+        g->epoch,g->publication_revision,p->route_generation,g->run_generation,
+        g->pending.generation,g->configured.generation,g->active.generation,
+        p->lease.ticket.lease_id,p->lease.ticket.transition,p->lease.phase,p->lease.outcome,
+        p->claim_revision,p->target_mask,p->enabled_mask,
+        g->running | (g->layout_transition<<1) | (p->dirty<<2) | (p->expected_reconnect<<3),
+        p->expected_reconnect?p->reconnect_until:0,
+        input_ready,
+    };
+    if(memcmp(s->observed,current,sizeof current) || s->layout_error!=g->layout_error) {
+        memcpy(s->observed,current,sizeof current);
+        s->layout_error=g->layout_error;
+        s->pending=true;
+    }
+}
+size_t osg_gateway_publication_stream_peek(const osg_gateway_publication_stream_t *s,char out[OSG_GW_PUBLICATION_STREAM_LINE]) {
+    if(!s->pending) return 0;
+    if(s->sequence==UINT64_MAX) {
+        static const char loss[]="{\"publicationStream\":\"loss\"}\r\n";
+        memcpy(out,loss,sizeof loss);
+        return sizeof loss-1;
+    }
+    char sequence[OSG_GW_PUBLICATION_DECIMAL_CAPACITY];
+    int size=snprintf(out,OSG_GW_PUBLICATION_STREAM_LINE,
+        "{\"publicationStream\":\"change\",\"epoch\":%lu,\"sequence\":\"%s\"}\r\n",
+        (unsigned long)s->observed[0],osg_gateway_publication_decimal(s->sequence+1,sequence));
+    return size>0 && size<OSG_GW_PUBLICATION_STREAM_LINE?(size_t)size:0;
+}
+void osg_gateway_publication_stream_pop(osg_gateway_publication_stream_t *s) {
+    s->pending=false;
+    if(s->sequence==UINT64_MAX) s->lost=true;
+    else s->sequence++;
 }

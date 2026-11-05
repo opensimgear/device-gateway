@@ -72,6 +72,10 @@ class Node:
 
 def command(connection, text):
     connection.sendall((text + '\n').encode())
+    return read_line(connection)
+
+
+def read_line(connection):
     result = bytearray()
     while not result.endswith(b'\n'):
         data = connection.recv(1)
@@ -129,6 +133,21 @@ class GatewayBoundaryTest(unittest.TestCase):
         self.assertIn('Gateway identity is already running', duplicate.error_path.read_text())
         self.assertFalse((duplicate_state / 'registry.bin').exists())
         self.assertEqual(self.node.admin('inspect')['gatewayEpoch'], 65536)
+
+    def test_publication_stream_orders_changes_with_replies_and_resets_on_reconnect(self):
+        with self.node.connect() as cdc:
+            cdc.sendall(b'cockpit 1 snapshot\npanel-stream\ncockpit 2 snapshot\n')
+            self.assertEqual(json.loads(read_line(cdc))['id'], 1)
+            self.assertEqual(json.loads(read_line(cdc)),
+                             {'publicationStream': 'change', 'epoch': 65536, 'sequence': '1'})
+            self.assertEqual(json.loads(read_line(cdc))['id'], 2)
+            self.node.admin('disconnect 1')
+            self.assertEqual(json.loads(read_line(cdc)),
+                             {'publicationStream': 'change', 'epoch': 65536, 'sequence': '2'})
+            self.assertEqual(json.loads(command(cdc, 'cockpit 3 snapshot'))['id'], 3)
+        with self.node.connect() as cdc:
+            self.assertEqual(json.loads(command(cdc, 'panel-stream')),
+                             {'publicationStream': 'change', 'epoch': 65536, 'sequence': '1'})
 
     def test_duplicate_state_cannot_write_flash(self):
         duplicate = self.start(uuid.uuid4().hex[:24], self.state, 'duplicate-state')

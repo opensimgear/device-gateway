@@ -19,3 +19,22 @@ bool osg_gateway_publication_effective(const osg_gateway_t *,osg_gateway_registr
 bool osg_gateway_publication_target(const osg_gateway_t *,const osg_gateway_registry_t *,osg_gateway_registry_t *);
 bool osg_gateway_publication_admit(osg_gateway_t *,const osg_publication_ticket_t *,bool restore,uint32_t now);
 void osg_gateway_publication_applied(osg_gateway_t *,const osg_publication_ticket_t *,bool restore,uint32_t now);
+
+enum { OSG_GW_PUBLICATION_DECIMAL_CAPACITY=21 };
+/* Return the start of the NUL-terminated decimal string within out. */
+const char *osg_gateway_publication_decimal(uint64_t,char out[OSG_GW_PUBLICATION_DECIMAL_CAPACITY]);
+
+enum { OSG_GW_PUBLICATION_STREAM_LINE=96, OSG_GW_PUBLICATION_STREAM_FIELDS=17 };
+typedef struct {
+    uint64_t observed[OSG_GW_PUBLICATION_STREAM_FIELDS],sequence;
+    const char *layout_error;
+    bool enabled,pending,lost;
+} osg_gateway_publication_stream_t;
+
+/* Connection-local and opt-in. Observe while the writer is blocked so a
+ * change cannot be erased by a return to the previous state. Peek and pop
+ * hand one complete line to the transport's ordered output buffer. */
+void osg_gateway_publication_stream_enable(osg_gateway_publication_stream_t *,bool enabled);
+void osg_gateway_publication_stream_observe(osg_gateway_publication_stream_t *,const osg_gateway_t *);
+size_t osg_gateway_publication_stream_peek(const osg_gateway_publication_stream_t *,char out[OSG_GW_PUBLICATION_STREAM_LINE]);
+void osg_gateway_publication_stream_pop(osg_gateway_publication_stream_t *);

@@ -120,6 +120,8 @@ static void reconnect_and_loss_test(void) {
 }
 static void wire_test(void) {
     osg_gateway_t g;flash_t f;fixture(&g,&f,32);osg_gateway_cockpit_request_t r;bool apply=true;char command[384],json[32768];
+    assert(osg_gateway_cockpit_response(&g,"0123456789abcdef01234567",1,NULL,json,sizeof json));
+    assert(strstr(json,"\"transition\":\"0\""));
     int n=snprintf(command,sizeof command,"cockpit 4294967295 65536 publication claim 00112233445566778899aabbccddeeff %lu ffffffff 00000000 5000",(unsigned long)g.publication_revision);
     assert(n>0 && n<384 && osg_gateway_cockpit_parse(command,&r));
     assert(!osg_gateway_cockpit_execute_at(&g,&r,NULL,NULL,&apply,1) && !apply);
@@ -140,6 +142,9 @@ static void wire_test(void) {
     for(unsigned i=0;i<sizeof bad/sizeof bad[0];i++) assert(!osg_gateway_cockpit_parse(bad[i],&r));
     assert(osg_gateway_cockpit_parse("cockpit 1 65536 publication state",&r));assert(!osg_gateway_cockpit_execute_at(&g,&r,NULL,NULL,&apply,4));
     assert(osg_gateway_cockpit_parse("cockpit 1 65536 publication describe",&r));assert(!osg_gateway_cockpit_execute_at(&g,&r,NULL,NULL,&apply,5));
+    g.publication.lease.ticket.transition=UINT64_MAX;
+    assert(osg_gateway_cockpit_response(&g,"0123456789abcdef01234567",r.id,NULL,json,sizeof json));
+    assert(strstr(json,"\"transition\":\"18446744073709551615\""));
 }
 static void delivery_revocation_test(void) {
     osg_gateway_t g;flash_t f;fixture(&g,&f,1);assert(osg_gateway_disable(&g,&g.modules[0].identity));osg_gateway_apply_layout(&g);
@@ -290,7 +295,90 @@ static void vectors(void) {
     assert(!osg_gateway_publication_release(&g,owner,g.publication.lease.ticket.lease_id,400));cycle(&g,&s,&f,401);
     assert(osg_gateway_cockpit_response(&g,"0123456789abcdef01234567",4,NULL,json,sizeof json));fputs(json,stdout);
 }
+static void stream_line(osg_gateway_publication_stream_t *stream,const char *expected) {
+    char line[OSG_GW_PUBLICATION_STREAM_LINE];
+    assert(osg_gateway_publication_stream_peek(stream,line)==strlen(expected));
+    assert(!strcmp(line,expected));
+    osg_gateway_publication_stream_pop(stream);
+    assert(!osg_gateway_publication_stream_peek(stream,line));
+}
+static void stream_test(void) {
+    osg_gateway_t g;flash_t flash;fixture(&g,&flash,1);
+    osg_gateway_publication_stream_t stream={0};
+    char line[OSG_GW_PUBLICATION_STREAM_LINE];
+    osg_gateway_publication_stream_observe(&stream,&g);
+    assert(!osg_gateway_publication_stream_peek(&stream,line));
+    osg_gateway_publication_stream_enable(&stream,true);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    stream_line(&stream,"{\"publicationStream\":\"change\",\"epoch\":65536,\"sequence\":\"1\"}\r\n");
+
+    assert(!osg_gateway_publication_claim(&g,owner,g.publication_revision,1,0,1000,10));
+    osg_gateway_publication_stream_observe(&stream,&g);
+    stream_line(&stream,"{\"publicationStream\":\"change\",\"epoch\":65536,\"sequence\":\"2\"}\r\n");
+
+    const osg_gateway_module_t *m=&g.modules[0];
+    osg_gateway_message_t input={.type=OSG_GW_INPUT,.source_node=m->source_node,.node=m->node,
+        .boot_session=m->boot_session,.lease=m->lease,.sequence=1,.report={1}};
+    assert(osg_gateway_receive(&g,&input,11,NULL)==OSG_GW_RX_ACCEPTED);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    stream_line(&stream,"{\"publicationStream\":\"change\",\"epoch\":65536,\"sequence\":\"3\"}\r\n");
+
+    input.sequence++;input.report[0]=2;
+    assert(osg_gateway_receive(&g,&input,12,NULL)==OSG_GW_RX_ACCEPTED);
+    osg_gateway_message_t heartbeat=input;
+    heartbeat.type=OSG_GW_HEARTBEAT;heartbeat.identity=m->identity;heartbeat.sequence++;
+    assert(osg_gateway_receive(&g,&heartbeat,13,NULL)==OSG_GW_RX_ACCEPTED);
+    osg_gateway_tick(&g,12+OSG_GW_INPUT_TIMEOUT_MS-1);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    assert(m->has_input);
+    assert(!osg_gateway_publication_stream_peek(&stream,line));
+    osg_gateway_tick(&g,12+OSG_GW_INPUT_TIMEOUT_MS);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    assert(m->online && !m->has_input);
+    stream_line(&stream,"{\"publicationStream\":\"change\",\"epoch\":65536,\"sequence\":\"4\"}\r\n");
+
+    uint32_t lease=g.publication.lease.ticket.lease_id;
+    assert(!osg_gateway_publication_renew(&g,owner,lease,1000,300));
+    osg_gateway_publication_stream_observe(&stream,&g);
+    assert(!osg_gateway_publication_stream_peek(&stream,line));
+    osg_gateway_publication_tick(&g,1300);
+    assert(g.publication.lease.phase!=OSG_PUBLICATION_OWNED);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    assert(osg_gateway_publication_stream_peek(&stream,line));
+    osg_gateway_publication_transport_lost(&g,1301);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    stream_line(&stream,"{\"publicationStream\":\"change\",\"epoch\":65536,\"sequence\":\"5\"}\r\n");
+
+    /* Route changes independently of the public claim revision when it is exhausted. */
+    g.publication_revision=0;
+    osg_gateway_publication_stream_observe(&stream,&g);
+    osg_gateway_publication_stream_pop(&stream);
+    osg_gateway_publication_transport_lost(&g,1302);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    stream_line(&stream,"{\"publicationStream\":\"change\",\"epoch\":65536,\"sequence\":\"7\"}\r\n");
+
+    g.publication.expected_reconnect=true;
+    osg_gateway_publication_stream_observe(&stream,&g);
+    osg_gateway_publication_reconnect(&g,1303,true);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    stream_line(&stream,"{\"publicationStream\":\"change\",\"epoch\":65536,\"sequence\":\"8\"}\r\n");
+
+    stream.sequence=UINT64_MAX-1;
+    g.epoch++;
+    osg_gateway_publication_stream_observe(&stream,&g);
+    stream_line(&stream,"{\"publicationStream\":\"change\",\"epoch\":65537,\"sequence\":\"18446744073709551615\"}\r\n");
+    osg_gateway_publication_transport_lost(&g,1304);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    stream_line(&stream,"{\"publicationStream\":\"loss\"}\r\n");
+    osg_gateway_publication_stream_enable(&stream,true);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    assert(!osg_gateway_publication_stream_peek(&stream,line));
+    osg_gateway_publication_stream_enable(&stream,false);
+    osg_gateway_publication_stream_enable(&stream,true);
+    osg_gateway_publication_stream_observe(&stream,&g);
+    stream_line(&stream,"{\"publicationStream\":\"change\",\"epoch\":65537,\"sequence\":\"1\"}\r\n");
+}
 int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--publication-vectors")) {vectors();return 0;}
-    restore_test();disabled_and_arrival_test();expiry_and_fence_test();reconnect_and_loss_test();wire_test();delivery_revocation_test();attention_preservation_test();lost_confirmation_test();bounds_test();automatic_profile_writer_test();wrapped_clock_test();cancelled_saved_arrival_test();inspect_racing_owner_test();configured_writer_preservation_test();puts("gateway volatile publication: all tests passed");return 0;
+    restore_test();disabled_and_arrival_test();expiry_and_fence_test();reconnect_and_loss_test();wire_test();delivery_revocation_test();attention_preservation_test();lost_confirmation_test();bounds_test();automatic_profile_writer_test();wrapped_clock_test();cancelled_saved_arrival_test();inspect_racing_owner_test();configured_writer_preservation_test();stream_test();puts("gateway volatile publication: all tests passed");return 0;
 }

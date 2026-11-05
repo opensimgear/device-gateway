@@ -158,10 +158,12 @@ static size_t module_response(const osg_gateway_t *g,const char uid[25],uint32_t
     if(osg_gateway_identity_valid(&publisher)) append(&w,"{\"schema\":1,\"scope\":\"gateway-can\",\"nonpersistent\":true,\"captureAtClaim\":true,\"restore\":\"compare-if-unchanged\",\"minLeaseMs\":%u,\"maxLeaseMs\":%u,\"maxTargets\":32,\"reconnectRequired\":true}",OSG_PUBLICATION_MIN_TTL_MS,OSG_PUBLICATION_MAX_TTL_MS);
     else append(&w,"null");
     const osg_gateway_publication_t *p=&g->publication;
-    append(&w,",\"publicationRevision\":%lu,\"configuredGeneration\":%lu,\"effectiveGeneration\":%lu,\"publication\":{\"phase\":\"%s\",\"outcome\":\"%s\",\"leaseId\":%lu,\"expiresAtMs\":%lu,\"transition\":\"%llu\",\"claimRevision\":%lu,\"targetMask\":\"%08lx\",\"enabledMask\":\"%08lx\",\"expectedReconnect\":%s}",
+    char transition[OSG_GW_PUBLICATION_DECIMAL_CAPACITY];
+    append(&w,",\"publicationRevision\":%lu,\"configuredGeneration\":%lu,\"effectiveGeneration\":%lu,\"publication\":{\"phase\":\"%s\",\"outcome\":\"%s\",\"leaseId\":%lu,\"expiresAtMs\":%lu,\"transition\":\"%s\",\"claimRevision\":%lu,\"targetMask\":\"%08lx\",\"enabledMask\":\"%08lx\",\"expectedReconnect\":%s}",
         (unsigned long)g->publication_revision,(unsigned long)g->configured.generation,(unsigned long)g->active.generation,
         phase(p->lease.phase),outcome(p->lease.outcome),(unsigned long)p->lease.ticket.lease_id,(unsigned long)p->lease.ticket.expires_at,
-        (unsigned long long)p->lease.ticket.transition,(unsigned long)p->claim_revision,(unsigned long)p->target_mask,(unsigned long)p->enabled_mask,boolean(p->expected_reconnect));
+        osg_gateway_publication_decimal(p->lease.ticket.transition,transition),(unsigned long)p->claim_revision,
+        (unsigned long)p->target_mask,(unsigned long)p->enabled_mask,boolean(p->expected_reconnect));
     append(&w,",\"maxModules\":%u,\"maxRemembered\":%u,\"maxControllers\":%u,\"activeGeneration\":%lu,\"pendingGeneration\":%lu,\"rejectedAnnouncements\":%lu,\"lastRejectedIdentity\":",
         OSG_GW_MAX_MODULES,OSG_GW_MAX_MODULES,OSG_GW_MAX_MODULES,(unsigned long)g->active.generation,
         (unsigned long)g->pending.generation,(unsigned long)g->rejected_announcements);

@@ -26,6 +26,8 @@ static osg_gateway_layout_t layout;
 static osg_gateway_config_t configuration;
 static osg_gateway_panel_t panel;
 static osg_gateway_panel_cdc_t panel_cdc;
+static osg_gateway_publication_stream_t publication_cdc;
+static bool cdc_dtr,cdc_dtr_fell;
 
 static bool can_send(void *context,const osg_gateway_frame_t *frame) {
     (void)context;
@@ -81,7 +83,10 @@ static void cockpit_command(const char *line,uint32_t now) {
 }
 static void command(const char *line,uint32_t now) {
     if(!strncmp(line,"cockpit ",8)) cockpit_command(line,now);
-    else if(!strcmp(line,"panel-stream")) osg_gateway_panel_cdc_enable(&panel_cdc,true);
+    else if(!strcmp(line,"panel-stream")) {
+        osg_gateway_panel_cdc_enable(&panel_cdc,true);
+        osg_gateway_publication_stream_enable(&publication_cdc,true);
+    }
     else if(!strcmp(line,"hello") || !strcmp(line,"identity") || !strcmp(line,"info")) identity();
     else if(!strcmp(line,"help")) append("identity | inventory | registry | enable <32hex> | disable <32hex> | forget <32hex> | update-profile <32hex> | diagnostics | cockpit <id> snapshot | cockpit <id> <epoch> enable <32hex>|disable <32hex>|forget <32hex>|update-profile <32hex>|config <32hex> <boot> <child-command>|action <32hex> <boot> <child-command>|events <32hex> <boot> <child-command>\r\n");
     else if(!strcmp(line,"inventory")) {
@@ -164,7 +169,7 @@ int main(void) {
     const tusb_rhport_init_t usb={.role=TUSB_ROLE_DEVICE,.speed=TUSB_SPEED_FULL};
     if(!tusb_init(0,&usb)) board_fault();
     tud_disconnect();
-    bool attached=false,serial_open=false,active=false,was_can_fault=false,had_vbus=false;
+    bool attached=false,serial_open=false,active=false,was_can_fault=false,had_vbus=false,prefer_panel=false;
     uint32_t previous_recoveries=0;
     char line_buffer[OSG_GW_CONFIG_COMMAND_CAPACITY+96]; osg_line_t line; osg_line_init(&line,line_buffer,sizeof line_buffer);
     for(;;) {
@@ -186,6 +191,28 @@ int main(void) {
         tud_task();
         /* USB completion callbacks may tick the core at a later millisecond. */
         now=board_millis();
+        bool connected=attached && tud_cdc_connected();
+        if(serial_open && (cdc_dtr_fell || !connected)) {
+            serial_open=false;
+            osg_line_init(&line,line_buffer,sizeof line_buffer);
+            osg_gateway_panel_cdc_enable(&panel_cdc,false);
+            osg_gateway_publication_stream_enable(&publication_cdc,false);
+            prefer_panel=false;
+            response_size=response_offset=0;
+            osg_gateway_config_cancel(&configuration);
+            if(!layout.detached && !gateway.publication.expected_reconnect)
+                osg_gateway_publication_transport_lost(&gateway,now);
+            if(!cdc_dtr_fell) {
+                tud_cdc_read_flush();
+                tud_cdc_write_clear();
+            }
+        }
+        cdc_dtr_fell=false;
+        osg_gateway_publication_reconnect(&gateway,now,connected);
+        if(connected && !serial_open) {
+            serial_open=true;
+            identity(); append("type help for commands\r\n");
+        }
         bool running=attached && tud_mounted() && !tud_suspended();
         if(running!=active || running!=gateway.running) {
             active=running; invalidate_reports(); osg_gateway_set_running(&gateway,running);
@@ -235,48 +262,57 @@ int main(void) {
                 osg_gateway_cockpit_config_response(&gateway,uid,config_id,config_error,config_json,response,sizeof response);
             if(!response_size) append("{\"id\":%lu,\"ok\":false,\"error\":\"response_overflow\",\"state\":null}\r\n",(unsigned long)config_id);
         }
-        bool connected=attached && tud_cdc_connected();
-        osg_gateway_publication_reconnect(&gateway,now,connected);
-        if(connected!=serial_open) {
-            serial_open=connected; osg_line_init(&line,line_buffer,sizeof line_buffer);
-            osg_gateway_panel_cdc_enable(&panel_cdc,false);
-            response_size=response_offset=0;
-            if(!connected) {
-                osg_gateway_config_cancel(&configuration);
-                if(!layout.detached && !gateway.publication.expected_reconnect) osg_gateway_publication_transport_lost(&gateway,now);
-            }
-            /* DTR and the first host write may arrive in the same USB task.
-             * Preserve that request on open; discard old input only on close. */
-            if(!connected) tud_cdc_read_flush();
-            if(connected) { identity(); append("type help for commands\r\n"); }
-        }
         if(connected && response_offset<response_size) {
             response_offset+=tud_cdc_write(response+response_offset,(uint32_t)(response_size-response_offset));
             tud_cdc_write_flush();
         }
         if(response_offset==response_size) response_offset=response_size=0;
-        for(unsigned budget=0;connected && !layout.pending && !configuration.busy && !response_size && budget<32 && tud_cdc_available();budget++) {
+        osg_gateway_publication_stream_observe(&publication_cdc,&gateway);
+        /* Alternate streams when both are ready. Drain publication changes
+         * before admitting another reply, even if a panel event goes first. */
+        bool event_blocked=false;
+        if(connected && !response_size) {
+            char publication[OSG_GW_PUBLICATION_STREAM_LINE];
+            size_t publication_size=osg_gateway_publication_stream_peek(&publication_cdc,publication),panel_size;
+            const char *panel_event=osg_gateway_panel_cdc_peek(&panel_cdc,&panel_size);
+            bool send_panel=panel_event && (!publication_size || prefer_panel);
+            const char *event=send_panel?panel_event:publication;
+            size_t size=send_panel?panel_size:publication_size;
+            if(size && tud_cdc_write_available()>=size) {
+                if(tud_cdc_write(event,(uint32_t)size)!=size) board_fault();
+                if(send_panel) {
+                    osg_gateway_panel_cdc_pop(&panel_cdc);
+                    event_blocked=publication_size!=0;
+                } else osg_gateway_publication_stream_pop(&publication_cdc);
+                prefer_panel=!send_panel;
+                tud_cdc_write_flush();
+            } else event_blocked=size!=0;
+        }
+        for(unsigned budget=0;connected && !event_blocked && !layout.pending && !configuration.busy && !response_size && budget<32 && tud_cdc_available();budget++) {
             char byte; if(tud_cdc_read(&byte,1)!=1) break;
             osg_line_result_t result=osg_line_feed(&line,byte);
-            if(result==OSG_LINE_READY) command(line_buffer,now);
+            if(result==OSG_LINE_READY) {command(line_buffer,now);break;}
             else if(result==OSG_LINE_TOO_LONG) append("ERR line too long\r\n");
-        }
-        /* Insert only whole event lines between command replies on this CDC owner. */
-        if(connected && !response_size) {
-            size_t size;
-            const char *event=osg_gateway_panel_cdc_peek(&panel_cdc,&size);
-            if(event && tud_cdc_write_available()>=size) {
-                if(tud_cdc_write(event,(uint32_t)size)!=size) board_fault();
-                osg_gateway_panel_cdc_pop(&panel_cdc);
-                tud_cdc_write_flush();
-            }
         }
         hid_task(now);
         board_led(can_fault ? ((now/100U)&1U)!=0 : (active ? ((now/500U)&1U)!=0 : ((now/1000U)&1U)!=0));
     }
 }
+void tud_cdc_line_state_cb(uint8_t itf,bool dtr,bool rts) {
+    (void)rts;
+    if(itf) return;
+    if(cdc_dtr && !dtr) {
+        cdc_dtr_fell=true;
+        /* Discard queued bytes at the edge, before a reopen and its first
+         * host write can be processed by the same TinyUSB task. */
+        tud_cdc_read_flush();
+        tud_cdc_write_clear();
+    }
+    cdc_dtr=dtr;
+}
 void tud_mount_cb(void) { invalidate_reports(); }
 void tud_umount_cb(void) {
+    cdc_dtr=false;
     invalidate_reports();
     if(!layout.detached && !gateway.publication.expected_reconnect) osg_gateway_publication_transport_lost(&gateway,board_millis());
 }

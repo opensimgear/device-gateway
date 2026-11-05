@@ -251,6 +251,8 @@ static struct {
     osg_line_t input_line,cdc_line;
     char output[OSG_GW_COCKPIT_RESPONSE_CAPACITY+1024];
     size_t output_length,output_offset;
+    bool output_event;
+    osg_gateway_publication_stream_t publication_cdc;
 } local={.bus=-1,.listener=-1,.cdc=-1,.lock=-1,.state_lock=-1,.stdin_open=true};
 static void die(const char *message) { fprintf(stderr,"%s: %s\n",message,strerror(errno)); exit(1); }
 static void stop_signal(int signal_number) { (void)signal_number; stopped=1; }
@@ -370,6 +372,8 @@ static void detach_cdc(void) {
     if(local.cdc>=0) {close(local.cdc);local.cdc=-1;}
     if(!simulation.layout.detached && !simulation.gateway.publication.expected_reconnect) osg_gateway_publication_transport_lost(&simulation.gateway,simulation.now);
     local.output_offset=local.output_length=0;osg_line_init(&local.cdc_line,local.cdc_input,sizeof local.cdc_input);
+    local.output_event=false;
+    osg_gateway_publication_stream_enable(&local.publication_cdc,false);
 }
 static void publish_gateway(bool publish) {
     if(!publish) {if(unlink(local.advertisement)<0 && errno!=ENOENT) die("Could not remove gateway advertisement");return;}
@@ -402,6 +406,7 @@ static void cdc_reply(const char *line) {
     response_output=stdout;
     if(length>sizeof local.output) {free(bytes);detach_cdc();return;}
     memcpy(local.output,bytes,length);local.output_length=length;local.output_offset=0;free(bytes);
+    local.output_event=false;
 }
 static void serve_cdc(void) {
     osg_gateway_publication_reconnect(&simulation.gateway,simulation.now,local.cdc>=0);
@@ -411,18 +416,35 @@ static void serve_cdc(void) {
         else if(errno!=EAGAIN && errno!=EWOULDBLOCK && errno!=EINTR) die("Could not accept local CDC client");
     }
     if(local.cdc<0)return;
+    osg_gateway_publication_stream_observe(&local.publication_cdc,&simulation.gateway);
+    bool sent_event=false;
     if(!cdc_drained()) {
         ssize_t n=send(local.cdc,local.output+local.output_offset,local.output_length-local.output_offset,MSG_DONTWAIT);
         if(n>0)local.output_offset+=(size_t)n;
         else if(n==0 || (errno!=EAGAIN && errno!=EWOULDBLOCK && errno!=EINTR))detach_cdc();
-        return;
+        if(local.cdc<0 || !cdc_drained()) return;
+        sent_event=local.output_event;
+    }
+    /* One staged event gets an entire line on the socket before a command
+     * reply can replace the output. Give commands a turn after each event. */
+    if(!sent_event) {
+        size_t size=osg_gateway_publication_stream_peek(&local.publication_cdc,local.output);
+        if(size) {
+            local.output_length=size;local.output_offset=0;local.output_event=true;
+            osg_gateway_publication_stream_pop(&local.publication_cdc);
+            return;
+        }
     }
     for(unsigned i=0;i<1024;i++) {
         char byte;ssize_t n=recv(local.cdc,&byte,1,MSG_DONTWAIT);
         if(n==0) {detach_cdc();return;}
         if(n<0) {if(errno!=EAGAIN && errno!=EWOULDBLOCK && errno!=EINTR)detach_cdc();return;}
         osg_line_result_t result=osg_line_feed(&local.cdc_line,byte);
-        if(result==OSG_LINE_READY) {cdc_reply(local.cdc_input);return;}
+        if(result==OSG_LINE_READY) {
+            if(!strcmp(local.cdc_input,"panel-stream")) osg_gateway_publication_stream_enable(&local.publication_cdc,true);
+            else cdc_reply(local.cdc_input);
+            return;
+        }
         if(result==OSG_LINE_TOO_LONG) {cdc_reply("");return;}
     }
 }
